@@ -172,9 +172,9 @@ class ReasoningParamsMixin:
     def _reasoning_replay_route(self):
         """Reasoning replay decision for the active route (``message_sanitization.reasoning_replay_route``).
 
-        Cached per (api_mode, provider, model, base_url, opt-in, rejected keys) — called many times
-        per turn — and recomputed after ``switch_model()`` / fallback activation or a recorded
-        field rejection, the only events allowed to change the replayed bytes mid-session.
+        Cached per (api_mode, provider, model, base_url, replay setting, rejected keys). The
+        setting is frozen at user-turn admission; route switches and recorded rejections also
+        change the key.
         """
         from agent.message_sanitization import reasoning_replay_route, rejected_reasoning_carriers
 
@@ -196,17 +196,34 @@ class ReasoningParamsMixin:
         return self._reasoning_replay_route().pad
 
     def _reasoning_echo_opt_in(self) -> bool:
-        """``model.reasoning_echo``: treat the *current* provider as must-echo (pad tool-call turns) — for
-        gateways proxying DeepSeek/Kimi/MiMo that the host rules miss. Replay itself is on by default;
-        fallback activation swaps the flag and ``restore_primary_runtime()`` restores it."""
+        """Whether the active Chat Completions route replays reasoning across user turns.
+
+        True also keeps the legacy must-echo opt-in for custom gateways. Provider-required
+        reasoning within an in-flight tool loop is independent of this setting.
+        """
         return bool(getattr(self, "_reasoning_echo_flag", False))
 
-    @staticmethod
-    def _read_reasoning_echo_from_config() -> bool:
-        """Read ``model.reasoning_echo`` from config; False on any error."""
+    def _refresh_reasoning_echo_for_turn(self) -> None:
+        """Freeze the primary setting at user-turn admission, after primary-route restoration."""
+        if getattr(self, "api_mode", "chat_completions") != "chat_completions":
+            return
+        self._reasoning_echo_flag = self._read_reasoning_echo_from_config()
+        primary = getattr(self, "_primary_runtime", None)
+        if isinstance(primary, dict):
+            primary["reasoning_echo_flag"] = self._reasoning_echo_flag
+
+    def _read_reasoning_echo_from_config(self) -> bool:
+        """Read the model setting, then its agent-level compatibility alias; default False."""
         try:
             from hermes_cli.config import load_config_readonly
-            return bool((load_config_readonly().get("model") or {}).get("reasoning_echo"))
+            config = load_config_readonly()
+            model = config.get("model")
+            if isinstance(model, dict) and "reasoning_echo" in model:
+                return model["reasoning_echo"] is True
+            if getattr(self, "api_mode", "chat_completions") != "chat_completions":
+                return False
+            agent = config.get("agent") or {}
+            return agent.get("reasoning_echo") is True
         except Exception as exc:  # health: allow BLE001 -- a config failure must fall back, not fail init
             # Log the class, never the config value or exception traceback.
             logging.getLogger("run_agent").warning(

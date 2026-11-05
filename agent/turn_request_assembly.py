@@ -35,6 +35,8 @@ class AssembledRequest:
     approx_tokens: Any
     request_pressure_tokens: Any
     total_chars: Any
+    reasoning_source_messages: Any = None
+    reasoning_replay_key: Any = None
 
 
 def _append_moa_context(agent: Any, api_messages: Any, moa_config: Any, original_user_message: Any) -> None:
@@ -103,55 +105,21 @@ def _prepare_moa_request(agent: Any, api_messages: Any, pending_moa_prepared_req
     return prepared, api_messages, pending_moa_prepared_request
 
 
-def assemble_api_request(
-    agent: Any, *, messages: Any, current_turn_user_idx: Any, _ext_prefetch_cache: Any,
-    _plugin_user_context: Any, moa_config: Any, active_system_prompt: Any,
-    original_user_message: Any, pending_moa_prepared_request: Any, request_logger: Any,
-) -> AssembledRequest:
-    """Assemble the request in the original order. ORDER IS LOAD-BEARING: cache breakpoints
-    are injected only after whitespace normalization, the orphan sweep, thinking-only drop /
-    user merge and surrogate stripping, so the same row's bytes never vary across turns."""
-    from agent.conversation_loop import (
-        _CODEX_INCOMPLETE_NUDGE, _apply_context_engine_selection, _canonicalize_api_tool_calls,
-        _clone_message_for_send, _midturn_request_pressure_tokens, _pressure_with_real_floor,
-    )
-    from agent.model_metadata import (
-        estimate_messages_tokens_rough,
-        estimate_native_anthropic_messages_tokens_rough,
-    )
+def prepare_reasoning_replay_messages(agent: Any, source_messages: list, *, reconcile_native: bool = False) -> list:
+    """Fresh, cleaned per-attempt copy: a fallback may restore carriers removed by the primary."""
+    from agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE, _canonicalize_api_tool_calls, _clone_message_for_send
+    from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS
+    from agent.message_sanitization import project_reasoning_for_request, reasoning_route_for_agent
 
-    api_messages, effective_system = build_api_messages(
-        agent, messages, current_turn_user_idx=current_turn_user_idx,
-        ext_prefetch_cache=_ext_prefetch_cache, plugin_user_context=_plugin_user_context,
-        moa_config=moa_config, active_system_prompt=active_system_prompt,
-    )
-
-    if moa_config:
-        _append_moa_context(agent, api_messages, moa_config, original_user_message)
-
-    # Ephemeral prefill messages go right after the system prompt, API-call-time only.
-    if agent.prefill_messages:
-        sys_offset = 1 if (api_messages and api_messages[0].get("role") == "system") else 0
-        for idx, pfm in enumerate(agent.prefill_messages):
-            # Structural clone: the in-place sanitizers below must not write
-            # through into agent.prefill_messages' nested containers.
-            api_messages.insert(sys_offset + idx, _clone_message_for_send(pfm))
-
-    # Per-turn context selection hook: an engine may select/replace context for THIS
-    # call only — request-only, fail-open, and independent of should_compress().
-    _sel_incoming = (
-        messages[current_turn_user_idx] if 0 <= current_turn_user_idx < len(messages) else None
-    )
-    api_messages = _apply_context_engine_selection(
-        agent, api_messages, messages, _sel_incoming, logger=request_logger
-    )
-
-    # Context selection may replace the request with a fresh clone of canonical history.
-    # Re-apply durable rejection suppression after that final replacement hook.
-    from agent.anthropic_thinking_replay import apply_rejected_thinking_suppression
-
-    apply_rejected_thinking_suppression(agent, api_messages)
-
+    if getattr(agent, "api_mode", "") == "chat_completions":
+        api_messages = project_reasoning_for_request(source_messages, reasoning_route_for_agent(agent))
+    else:
+        api_messages = [_clone_message_for_send(m) for m in source_messages]
+        if reconcile_native:
+            agent._reapply_reasoning_echo_for_provider(api_messages)
+    for message in api_messages:
+        for key in PERSISTENCE_ONLY_MESSAGE_FIELDS:
+            message.pop(key, None)
     # Runs unconditionally (not gated on context_compressor) so orphaned tool
     # results from session loading or manual message edits are always caught.
     api_messages = agent._sanitize_api_messages(api_messages)
@@ -163,17 +131,6 @@ def assemble_api_request(
     from agent.image_eviction_policy import outbound_retired_image_ids
 
     evict_stale_outbound_tool_images(api_messages, outbound_retired_image_ids(agent))
-
-    # One-time repeated-heal notice goes out via the status/warning callback, NEVER
-    # appended to messages: the cached prompt prefix stays byte-identical.
-    try:
-        from agent.agent_runtime_helpers import consume_pending_sanitizer_heal_notice
-
-        _heal_notice = consume_pending_sanitizer_heal_notice()
-        if _heal_notice:
-            agent._emit_warning(_heal_notice)
-    except Exception:
-        logger.debug("sanitizer heal notice delivery failed", exc_info=True)
 
     # Drop thinking-only assistant turns + merge adjacent users, API copy only:
     # Anthropic-style backends 400 on a trailing `thinking` block; history keeps it.
@@ -199,6 +156,74 @@ def assemble_api_request(
 
     # No send-time pad loop here: ``repair_empty_non_final_messages`` (inside
     # ``_sanitize_api_messages``) is the single owner of empty-turn repair.
+
+    return api_messages
+
+
+def assemble_api_request(
+    agent: Any, *, messages: Any, current_turn_user_idx: Any, _ext_prefetch_cache: Any,
+    _plugin_user_context: Any, moa_config: Any, active_system_prompt: Any,
+    original_user_message: Any, pending_moa_prepared_request: Any, request_logger: Any,
+) -> AssembledRequest:
+    """Assemble the request in the original order. ORDER IS LOAD-BEARING: cache breakpoints
+    are injected only after whitespace normalization, the orphan sweep, thinking-only drop /
+    user merge and surrogate stripping, so the same row's bytes never vary across turns."""
+    from agent.conversation_loop import (
+        _apply_context_engine_selection, _clone_message_for_send,
+        _midturn_request_pressure_tokens, _pressure_with_real_floor,
+    )
+    from agent.model_metadata import (
+        estimate_messages_tokens_rough,
+        estimate_native_anthropic_messages_tokens_rough,
+    )
+
+    api_messages, effective_system = build_api_messages(
+        agent, messages, current_turn_user_idx=current_turn_user_idx,
+        ext_prefetch_cache=_ext_prefetch_cache, plugin_user_context=_plugin_user_context,
+        moa_config=moa_config, active_system_prompt=active_system_prompt,
+        preserve_reasoning_sources=getattr(agent, "api_mode", "") == "chat_completions",
+    )
+
+    if moa_config:
+        _append_moa_context(agent, api_messages, moa_config, original_user_message)
+
+    # Ephemeral prefill messages go right after the system prompt, API-call-time only.
+    if agent.prefill_messages:
+        sys_offset = 1 if (api_messages and api_messages[0].get("role") == "system") else 0
+        for idx, pfm in enumerate(agent.prefill_messages):
+            # Structural clone: the in-place sanitizers below must not write
+            # through into agent.prefill_messages' nested containers.
+            api_messages.insert(sys_offset + idx, _clone_message_for_send(pfm))
+
+    # Per-turn context selection hook: an engine may select/replace context for THIS
+    # call only — request-only, fail-open, and independent of should_compress().
+    _sel_incoming = (
+        messages[current_turn_user_idx] if 0 <= current_turn_user_idx < len(messages) else None
+    )
+    selection_options = {"preserve_reasoning_boundary": True} if getattr(agent, "api_mode", "") == "chat_completions" else {}
+    api_messages = _apply_context_engine_selection(
+        agent, api_messages, messages, _sel_incoming, logger=request_logger, **selection_options,
+    )
+
+    # Context selection may replace the request with a fresh clone of canonical history.
+    # Re-apply durable rejection suppression after that final replacement hook.
+    from agent.anthropic_thinking_replay import apply_rejected_thinking_suppression
+
+    apply_rejected_thinking_suppression(agent, api_messages)
+
+    reasoning_source_messages = api_messages if getattr(agent, "api_mode", "") == "chat_completions" else None
+    api_messages = prepare_reasoning_replay_messages(agent, api_messages)
+
+    # One-time repeated-heal notice goes out via the status/warning callback, NEVER
+    # appended to messages: the cached prompt prefix stays byte-identical.
+    try:
+        from agent.agent_runtime_helpers import consume_pending_sanitizer_heal_notice
+
+        _heal_notice = consume_pending_sanitizer_heal_notice()
+        if _heal_notice:
+            agent._emit_warning(_heal_notice)
+    except Exception:
+        logger.debug("sanitizer heal notice delivery failed", exc_info=True)
 
     # Build the request-local cache sections LAST, after every transcript mutation;
     # the canonical tool registry stays undecorated. Marked ``content`` becomes text
@@ -244,7 +269,7 @@ def assemble_api_request(
     # Charge stale thinking only when the active route replays it.
     from agent.turn_context import _agent_stale_thinking_on_wire
 
-    if _agent_stale_thinking_on_wire(agent):
+    if getattr(agent, "api_mode", "") == "chat_completions" or _agent_stale_thinking_on_wire(agent):
         if getattr(agent, "api_mode", "") == "anthropic_messages":
             from agent.anthropic_thinking_policy import native_anthropic_preserves_prior_thinking
 
@@ -269,6 +294,8 @@ def assemble_api_request(
     )
     # Usage-anchored override: real prompt_tokens (incl. system + tool schemas) +
     # delta estimate replaces the whole-history heuristic when the anchor is fresh.
+    from agent.usage_anchor import prepare_reasoning_usage_accounting
+    prepare_reasoning_usage_accounting(agent, messages)
     _anchored_pressure = anchored_context_tokens(messages, getattr(agent, "_usage_anchor", None))
     agent._request_pressure_anchored = _anchored_pressure is not None
     if _anchored_pressure is not None:
@@ -280,7 +307,9 @@ def assemble_api_request(
         request_pressure_tokens = _pressure_with_real_floor(
             agent.context_compressor, request_pressure_tokens
         )
+    from agent.message_sanitization import reasoning_replay_key
     return AssembledRequest(
         "fallthrough", api_messages, tools_for_api, _moa_prepared_request,
         pending_moa_prepared_request, approx_tokens, request_pressure_tokens, approx_tokens * 4,
+        reasoning_source_messages, reasoning_replay_key(agent),
     )

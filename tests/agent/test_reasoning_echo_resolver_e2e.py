@@ -1,25 +1,8 @@
-"""Production-shape coverage for reasoning_echo: real resolver + real init read.
+"""Real profile configuration and named-custom-provider resolution for reasoning_echo.
 
-Salvaged from #73811 per the consolidation triage on #76503 and adapted to this
-PR's per-active-provider `model.reasoning_echo` design.
-
-Every existing reasoning_echo test hand-sets `agent._reasoning_echo_flag` (and
-`provider`/`base_url`). None drives the REAL config path that `init_agent` uses:
-
-    agent._reasoning_echo_flag = bool(
-        (load_config_readonly().get("model") or {}).get("reasoning_echo"))
-
-...which is wrapped in `except Exception: False`, so if that read ever breaks the
-feature silently dies and no current test catches it. This test closes that gap.
-
-It also pins the named-custom-provider case: a provider declared under
-`providers.<name>` resolves at runtime to `provider == "custom"` (see
-`hermes_cli/runtime_provider.py`), and the echo flag must still take effect for
-it. A future refactor keying the flag on provider *name* would reintroduce that
-miss; this test is the tripwire.
-
-Uses a temp HERMES_HOME + real `load_config_readonly` (the config cache is
-path-keyed, so this is hermetic) — no live server, no hand-set flag.
+Salvaged from #73811 / #76503. A named provider resolves to ``custom``, and the
+real initialization reader must still apply its replay setting. The isolated
+assistant rows here represent an in-flight turn with no earlier user boundary.
 """
 
 from __future__ import annotations
@@ -60,11 +43,8 @@ def _write_home(tmp_path, monkeypatch, reasoning_echo: bool):
 
 def _agent_with_init_flag() -> AIAgent:
     """Build an agent and materialize the echo flag the way init_agent does."""
-    from hermes_cli.config import load_config_readonly
     agent = object.__new__(AIAgent)
-    agent._reasoning_echo_flag = bool(
-        (load_config_readonly().get("model") or {}).get("reasoning_echo")
-    )
+    agent._reasoning_echo_flag = agent._read_reasoning_echo_from_config()
     agent.provider = "custom"          # what the resolver returns for a named custom provider
     agent.base_url = "http://127.0.0.1:8098/v1"
     agent.model = "kimi-k3"
@@ -94,9 +74,8 @@ class TestReasoningEchoResolverE2E:
         copy_reasoning_content_for_api(agent, source, api_msg)
         assert api_msg["reasoning_content"] == "the model's chain of thought"
 
-    def test_flag_absent_still_replays_but_never_pads(self, tmp_path, monkeypatch):
-        """No reasoning_echo -> flag False: real reasoning is still replayed (replay is the
-        default on every route that can read it), but a reasoning-less turn is not padded."""
+    def test_flag_absent_keeps_current_turn_reasoning_but_never_pads(self, tmp_path, monkeypatch):
+        """The default keeps in-flight reasoning without forcing a custom route to echo blanks."""
         _write_home(tmp_path, monkeypatch, reasoning_echo=False)
         agent = _agent_with_init_flag()
         assert agent._reasoning_echo_flag is False

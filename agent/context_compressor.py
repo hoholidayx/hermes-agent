@@ -3144,12 +3144,8 @@ class ContextCompressor(
 
     def _tail_row_pricer(self, messages: list[dict[str, Any]]) -> Callable[[int], int]:
         """Per-row tail price ``index -> tokens``: the walk's accounting, shared by every gate that sizes a tail region."""
-        newest_asst_idx = _last_assistant_index(messages)
-        charge_all_thinking = self._stale_thinking_on_wire()
-        native_budget = self._native_anthropic_budget()
-        if native_budget:
-            return lambda i: native_budget(messages[i])
-        return lambda i: _estimate_msg_budget_tokens(messages[i], charge_all_thinking or i == newest_asst_idx)
+        from agent.context_compressor_tail import tail_row_pricer
+        return tail_row_pricer(self, messages)
 
     def _prune_boundary(
         self, result: list[dict[str, Any]], protect_tail_count: int, protect_tail_tokens: int | None,

@@ -157,6 +157,8 @@ def _send(fork: Any, capture: SideQuestionCapture, prompt: str, audit: _Audit) -
     built = build_request_payload(
         fork, api_messages=assembled.api_messages, _moa_prepared_request=None,
         tools_for_api=assembled.tools_for_api, system_message=None, api_call_count=1,
+        reasoning_source_messages=assembled.reasoning_source_messages,
+        reasoning_replay_key=assembled.reasoning_replay_key,
         api_request_id=api_request_id, effective_task_id=task_id, turn_id=turn_id,
     )
     if has_server_side_tools(built.api_kwargs):

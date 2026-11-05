@@ -39,6 +39,34 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
+def _hygiene_reasoning_projection(hs, history: list, incoming_message: Optional[dict]) -> Optional[list]:
+    """Price the upcoming CC request, not a previous turn's now-retired reasoning.
+
+    Hygiene runs before the incoming row is appended. Include that row only while
+    resolving replay scope, then exclude it from this history-only budget.
+    """
+    from types import SimpleNamespace
+    from agent.agent_init import _resolve_api_mode
+    from agent.message_sanitization import project_reasoning_for_request, reasoning_replay_route
+
+    data = hs.data if isinstance(hs.data, dict) else {}
+    model = data.get("model")
+    model = model if isinstance(model, dict) else {}
+    agent_config = data.get("agent")
+    agent_config = agent_config if isinstance(agent_config, dict) else {}
+    echo = model["reasoning_echo"] if "reasoning_echo" in model else agent_config.get("reasoning_echo", False)
+    base_url = hs.base_url or ""
+    route_facts = SimpleNamespace(provider=hs.provider or "", model=hs.model,
+                                 _base_url_hostname=base_url_hostname(base_url), _base_url_lower=base_url.lower())
+    _resolve_api_mode(route_facts, getattr(hs, "api_mode", None) or model.get("api_mode"), hs.provider, base_url)
+    route = reasoning_replay_route(route_facts.api_mode, route_facts.provider, hs.model, base_url,
+                                   echo_opt_in=echo is True)
+    if route.carriers is None or route.replay_history:
+        return None
+    scoped = [*history, incoming_message] if incoming_message is not None else history
+    return project_reasoning_for_request(scoped, route)[:len(history)]
+
+
 class GatewayTurnHygieneMixin:
     @dataclasses.dataclass
     class _HygienePlan:
@@ -118,6 +146,7 @@ class GatewayTurnHygieneMixin:
                 hs.provider = _hyg_runtime.get("provider") or hs.provider
                 hs.base_url = _hyg_runtime.get("base_url") or hs.base_url
                 hs.api_key = _hyg_runtime.get("api_key") or hs.api_key
+                hs.api_mode = _hyg_runtime.get("api_mode")
 
             if hs.config_context_length is not None:
                 try:
@@ -153,7 +182,7 @@ class GatewayTurnHygieneMixin:
             pass
         return hs
 
-    async def _hmwa_hygiene_plan(self, hs, history, session_entry, session_key):
+    async def _hmwa_hygiene_plan(self, hs, history, session_entry, session_key, *, incoming_message=None):
         """Decide whether hygiene compression fires this turn (token/message thresholds, DB-backed
         failure cooldown, in-flight compression)."""
         from agent.model_metadata import estimate_messages_tokens_rough, get_model_context_length_async
@@ -165,26 +194,28 @@ class GatewayTurnHygieneMixin:
         _warn_token_threshold = int(_hyg_context_length * 0.95)
         _msg_count = len(history)
 
-        # Real usage decides: the API-reported prompt count, else the anchor persisted on the session
-        # row (real count + delta of what was appended since, survives gateway restarts), else the
-        # rough estimate (runs 30-50% high, which only fires hygiene early — safe). Do NOT compensate
-        # with a threshold multiplier.
+        # Current-turn CC replay retires old thinking before the incoming user row is
+        # appended; yesterday's actual usage/anchor can no longer price that request.
+        # Other routes retain the provider-exact count, then persisted anchor, then rough fallback.
         from agent.image_token_cost import image_cost_context, learned_image_token_cost
-        _anchored = None
-        # Images in any local delta/estimate are priced at the cost learned from this model's usage.
+        _projected = _hygiene_reasoning_projection(hs, history, incoming_message)
         with image_cost_context(learned_image_token_cost(hs.model, hs.base_url)):
-            if session_entry.last_prompt_tokens <= 0:
-                from agent.usage_anchor import persisted_anchor_tokens
-                _session_db = getattr(self, "_session_db", None)
-                _anchored = persisted_anchor_tokens(
-                    getattr(_session_db, "_db", _session_db), session_entry.session_id, history,
-                )
-            if session_entry.last_prompt_tokens > 0:
-                _approx_tokens, _token_source = session_entry.last_prompt_tokens, "actual"
-            elif _anchored is not None:
-                _approx_tokens, _token_source = _anchored, "anchored"
+            if _projected is not None:
+                _approx_tokens, _token_source = estimate_messages_tokens_rough(_projected), "reasoning-projected"
             else:
-                _approx_tokens, _token_source = estimate_messages_tokens_rough(history), "estimated"
+                _anchored = None
+                if session_entry.last_prompt_tokens <= 0:
+                    from agent.usage_anchor import persisted_anchor_tokens
+                    _session_db = getattr(self, "_session_db", None)
+                    _anchored = persisted_anchor_tokens(
+                        getattr(_session_db, "_db", _session_db), session_entry.session_id, history,
+                    )
+                if session_entry.last_prompt_tokens > 0:
+                    _approx_tokens, _token_source = session_entry.last_prompt_tokens, "actual"
+                elif _anchored is not None:
+                    _approx_tokens, _token_source = _anchored, "anchored"
+                else:
+                    _approx_tokens, _token_source = estimate_messages_tokens_rough(history), "estimated"
 
         # Hard safety valve: force compression at an extreme message count regardless of tokens,
         # breaking the disconnect → no token data → no compression spiral. 5000 clears 1M+ sessions.
@@ -776,7 +807,11 @@ class GatewayTurnHygieneMixin:
         # Hygiene can never land with compression disabled; a sub-limit transcript is the identity (#111988).
         if not hs.compression_enabled:
             return self._bound_hygiene_payload(history, hs, session_entry)
-        plan = await self._hmwa_hygiene_plan(hs, history, session_entry, session_key)
+        from gateway.response_filters import display_kind_for_event
+        incoming = {"role": "user", "content": event.text or "Incoming user message"}
+        if kind := display_kind_for_event(event):
+            incoming["display_kind"] = kind
+        plan = await self._hmwa_hygiene_plan(hs, history, session_entry, session_key, incoming_message=incoming)
         # No compression this turn (under both thresholds, cooldown, or one already in flight): without
         # the bound the model would get the full uncompressed transcript.
         if not plan.needs_compress:

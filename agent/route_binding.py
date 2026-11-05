@@ -15,6 +15,18 @@ from utils import base_url_host_matches
 logger = logging.getLogger(__name__)
 
 
+def reasoning_echo_for_fallback(agent: Any, entry: dict[str, Any]) -> bool:
+    """An explicit route setting wins; Chat Completions routes otherwise inherit the primary."""
+    if "reasoning_echo" in entry:
+        return entry["reasoning_echo"] is True
+    if agent.api_mode != "chat_completions":
+        return False
+    primary = getattr(agent, "_primary_runtime", None)
+    if isinstance(primary, dict):
+        return bool(primary.get("reasoning_echo_flag", False))
+    return bool(getattr(agent, "_reasoning_echo_flag", False))
+
+
 def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: str) -> Optional[tuple[str, str]]:
     """Swap ``agent`` onto ``entry`` (a fallback-chain-shaped dict). Returns ``(old_model,
     old_provider)``, or None when the provider has no usable client. Sets ``_fallback_activated``
@@ -65,8 +77,8 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
     agent._config_context_length = None
     agent.model, agent.provider, agent.requested_provider = model, provider, provider
     agent.base_url, agent.api_mode = base_url, api_mode
-    # reasoning_content echo opt-in travels with the active provider; restore_primary_runtime reverts it.
-    agent._reasoning_echo_flag = bool(entry.get("reasoning_echo", False))
+    # Inherit the primary, never a previous fallback's override. Native adapters keep their legacy default.
+    agent._reasoning_echo_flag = reasoning_echo_for_fallback(agent, entry)
     if hasattr(agent, "_transport_cache"):
         agent._transport_cache.clear()
     from agent.turn_recovery_codex import reset_codex_reasoning_replay

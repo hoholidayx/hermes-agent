@@ -120,6 +120,22 @@ hermes doctor       # Diagnose any issues
 
 📖 **[Full documentation →](https://hermes-agent.nousresearch.com/docs/)**
 
+### Reasoning replay
+
+For every Chat Completions provider, including DeepSeek, reasoning stays within the current
+user message and its tool iterations by default. On the next user message, Hermes omits earlier
+reasoning from the API request while preserving the stored transcript, tool calls, and tool results.
+
+```yaml
+model:
+  reasoning_echo: false  # default; true enables reasoning replay across user messages
+```
+
+DeepSeek's required tool-loop reasoning does not override this setting. This controls replay,
+not reasoning generation or history display. Native Anthropic, Bedrock, and Responses protocols
+retain their existing replay rules. See the [configuration guide](website/docs/user-guide/configuration.md#reasoning-replay-reasoning_echo)
+for fallback inheritance, configuration precedence, and when changes take effect.
+
 ---
 
 ## Skip the API-key collection — Nous Portal

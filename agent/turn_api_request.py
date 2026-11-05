@@ -31,6 +31,7 @@ class ApiRequestBuild:
     api_kwargs: Any
     _original_api_kwargs: Any
     _llm_middleware_trace: Any
+    reasoning_replay_key: Any = None
 
 
 def _set_extra_header(api_kwargs: Any, key: str, value: str) -> None:
@@ -110,7 +111,7 @@ def _fire_pre_api_request_hook(
 def build_request_payload(
     agent: Any, *, api_messages: Any, _moa_prepared_request: Any, tools_for_api: Any,
     system_message: Any, api_call_count: Any, api_request_id: Any, effective_task_id: Any,
-    turn_id: Any,
+    turn_id: Any, reasoning_source_messages: Any = None, reasoning_replay_key: Any = None,
 ) -> ApiRequestBuild:
     """The provider payload through the LLM request middleware, with no turn hook fired: the
     turn loop's :func:`build_api_request` and off-turn side requests (``ctx.side_question``,
@@ -123,7 +124,17 @@ def build_request_payload(
     # api_messages was built for the primary; a fallback (DeepSeek / Kimi / MiMo) may
     # require reasoning_content — re-apply the echo-back pad (idempotent) and re-render
     # the prompt-cache decoration for the current provider.
-    agent._reapply_reasoning_echo_for_provider(api_messages)
+    from agent.message_sanitization import reasoning_replay_key as replay_key
+    current_replay_key = replay_key(agent)
+    if reasoning_source_messages is not None and reasoning_replay_key != current_replay_key:
+        from agent.turn_request_assembly import prepare_reasoning_replay_messages
+        api_messages = prepare_reasoning_replay_messages(agent, reasoning_source_messages, reconcile_native=True)
+    elif reasoning_source_messages is not None and getattr(agent, "api_mode", "") == "chat_completions":
+        from agent.message_sanitization import reconcile_reasoning_carriers, reasoning_route_for_agent
+        api_messages = reconcile_reasoning_carriers(api_messages, reasoning_route_for_agent(agent))
+    else:
+        api_messages = list(api_messages)
+        agent._reapply_reasoning_echo_for_provider(api_messages)
     api_messages, _moa_prepared_request, tools_for_api = (
         _redecorate_prompt_cache_for_provider(
             agent, api_messages, system_message=system_message, moa_prepared=_moa_prepared_request,
@@ -170,7 +181,7 @@ def build_request_payload(
         _llm_middleware_trace = []
     return ApiRequestBuild(
         "fallthrough", api_messages, _moa_prepared_request, tools_for_api, api_kwargs,
-        _original_api_kwargs, _llm_middleware_trace,
+        _original_api_kwargs, _llm_middleware_trace, current_replay_key,
     )
 
 
@@ -178,7 +189,8 @@ def build_api_request(
     agent: Any, *, api_messages: Any, _moa_prepared_request: Any, tools_for_api: Any,
     system_message: Any, messages: Any, original_user_message: Any, approx_tokens: Any,
     total_chars: Any, retry_count: Any, api_call_count: Any, api_request_id: Any,
-    api_start_time: Any, effective_task_id: Any, turn_id: Any,
+    api_start_time: Any, effective_task_id: Any, turn_id: Any, reasoning_source_messages: Any = None,
+    reasoning_replay_key: Any = None,
 ) -> ApiRequestBuild:
     """Assemble the attempt's request in the original order (every mutation happens BEFORE
     middleware/hooks/debug dumps observe the payload)."""
@@ -188,6 +200,7 @@ def build_api_request(
         agent, api_messages=api_messages, _moa_prepared_request=_moa_prepared_request,
         tools_for_api=tools_for_api, system_message=system_message, api_call_count=api_call_count,
         api_request_id=api_request_id, effective_task_id=effective_task_id, turn_id=turn_id,
+        reasoning_source_messages=reasoning_source_messages, reasoning_replay_key=reasoning_replay_key,
     )
     api_kwargs, api_messages, _moa_prepared_request = built.api_kwargs, built.api_messages, built._moa_prepared_request
     _fire_pre_api_request_hook(

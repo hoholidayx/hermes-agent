@@ -390,7 +390,7 @@ class TestReasoningPrimaryToStrictFallback:
         reapply_reasoning_echo_for_provider(mistral, msgs)
         deepseek = _make_agent(provider="deepseek", model="deepseek-v4-pro")
         reapply_reasoning_echo_for_provider(deepseek, msgs)
-        assert msgs[2]["reasoning_content"] == " "
+        assert "reasoning_content" not in msgs[2]  # completed user turn must stay filtered
         assert msgs[6]["reasoning_content"] == " "
 
     def test_copy_strips_space_pad_for_mistral(self) -> None:

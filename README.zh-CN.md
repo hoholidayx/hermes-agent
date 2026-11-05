@@ -70,6 +70,20 @@ hermes doctor       # 诊断问题
 
 📖 **[完整文档 →](https://hermes-agent.nousresearch.com/docs/)**
 
+### 思考内容回传策略
+
+所有 Chat Completions 提供商（包括 DeepSeek）默认只回传当前用户消息及其工具迭代内的思考内容。
+下一条用户消息开始时，API 请求会过滤先前轮次的 reasoning；原始会话、工具调用和工具结果仍完整保存。
+
+```yaml
+model:
+  reasoning_echo: false  # 默认值；true 允许跨用户消息回传 reasoning
+```
+
+DeepSeek 工具迭代所需的 reasoning 不会强制开启跨消息回传。此开关不关闭模型自身思考或历史展示。
+原生 Anthropic、Bedrock、Responses 协议沿用已有规则。
+配置优先级、fallback 继承和生效时机详见[配置文档](website/docs/user-guide/configuration.md#reasoning-replay-reasoning_echo)。
+
 ---
 
 ## 省去到处收集 API Key — Nous Portal

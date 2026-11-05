@@ -1350,7 +1350,7 @@ def _engine_overrides_hook(engine: Any, name: str) -> bool:
 
 def _apply_context_engine_selection(
     agent: Any, api_messages: list[dict[str, Any]], conversation_messages: list[dict[str, Any]],
-    incoming_message: Optional[dict[str, Any]], *, logger: Any,
+    incoming_message: Optional[dict[str, Any]], *, logger: Any, preserve_reasoning_boundary: bool = False,
 ) -> list[dict[str, Any]]:
     """Run the optional per-turn ``ContextEngine.select_context()`` hook, fail-open: any
     exception or invalid return yields ``api_messages`` unchanged; history is never mutated."""
@@ -1390,6 +1390,11 @@ def _apply_context_engine_selection(
         # carry persistence-only fields; the request copy was stripped BEFORE this hook, so strip the
         # selection too or those fields reach the provider. Dicts without them pass through as-is.
         stripped = [without_persistence_fields(m) for m in selected]
+        if preserve_reasoning_boundary:
+            # Keep classification metadata only until the reasoning projection. The cleanup
+            # immediately following it removes these before any transport or request hook.
+            stripped = [{**target, **{key: source[key] for key in ("display_kind", "display_metadata") if key in source}}
+                        for source, target in zip(selected, stripped)]
         return selected if all(a is b for a, b in zip(stripped, selected)) else stripped
     logger.warning(
         "Context engine select_context returned an invalid value "
@@ -1514,6 +1519,8 @@ class _LoopState:
     # Per-iteration slots.
     request_logger: Any = None
     api_messages: Any = None
+    reasoning_source_messages: Any = None
+    reasoning_replay_key: Any = None
     tools_for_api: Any = None
     _moa_prepared_request: Any = None
     approx_tokens: Any = None

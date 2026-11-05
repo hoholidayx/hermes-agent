@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List
 
 from agent.image_token_cost import calibrate_from_usage
-from agent.usage_anchor import capture_usage_anchor, set_usage_anchor
+from agent.usage_anchor import capture_usage_anchor, reasoning_usage_context, set_usage_anchor
 from agent.usage_pricing import estimate_usage_cost, normalize_usage, with_served_service_tier
 
 logger = logging.getLogger("agent.conversation_loop")
@@ -139,7 +139,8 @@ def record_response_usage(
     # introduced images, the residual is their real per-image cost (learned before re-anchoring).
     calibrate_from_usage(agent, messages, context_prompt_tokens or aggregator_usage.prompt_tokens)
     _new_anchor = capture_usage_anchor(
-        context_prompt_tokens or aggregator_usage.prompt_tokens, aggregator_usage.output_tokens, messages
+        context_prompt_tokens or aggregator_usage.prompt_tokens, aggregator_usage.output_tokens, messages,
+        reasoning_context=reasoning_usage_context(agent, messages),
     )
     if _new_anchor is not None:
         set_usage_anchor(agent, _new_anchor, turn_base=api_call_count == 1)

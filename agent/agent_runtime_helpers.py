@@ -2229,8 +2229,6 @@ def _swap_switch_runtime(agent, new_model, new_provider, api_key, base_url, api_
     agent._config_context_length = None
     agent.model = new_model
     agent.provider = agent.requested_provider = new_provider
-    # Re-read reasoning_echo so the flag reflects the new primary model (see _reasoning_echo_opt_in).
-    agent._reasoning_echo_flag = agent._read_reasoning_echo_from_config()
     # Empty base_url while the provider changes means upstream resolution failed; falling back to
     # the old provider's URL pairs the wrong host and persists via _primary_runtime. Fail loud.
     # Same-provider re-select (credential refresh) may keep the URL.
@@ -2265,6 +2263,8 @@ def _swap_switch_runtime(agent, new_model, new_provider, api_key, base_url, api_
                 "continuing without pool rotation this turn", new_provider, _pool_exc,
             )
     _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new_norm)
+    # The resolved transport (including MoA's facade) decides whether the compatibility alias applies.
+    agent._reasoning_echo_flag = agent._read_reasoning_echo_from_config()
     sync_credential_pool_entry_id(agent)
 
 

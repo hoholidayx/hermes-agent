@@ -64,7 +64,10 @@ def _priced_prefix_fingerprint(messages: list[dict[str, Any]], base_count: int) 
     return hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()
 
 
-def capture_usage_anchor(prompt_tokens: Any, completion_tokens: Any, messages: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
+def capture_usage_anchor(
+    prompt_tokens: Any, completion_tokens: Any, messages: list[dict[str, Any]], *,
+    reasoning_context: Optional[dict[str, Any]] = None,
+) -> Optional[dict[str, Any]]:
     """Build a usage anchor from provider-reported usage, or None when usage is unusable."""
     try:
         pt = int(prompt_tokens or 0)
@@ -74,7 +77,7 @@ def capture_usage_anchor(prompt_tokens: Any, completion_tokens: Any, messages: l
     if pt <= 0 or not isinstance(messages, list) or not messages:
         return None  # some endpoints omit usage — caller keeps its anchor
     last = messages[-1]
-    return {
+    anchor = {
         "prompt_tokens": pt,
         "completion_tokens": max(0, ct),
         "base_count": len(messages),
@@ -82,6 +85,58 @@ def capture_usage_anchor(prompt_tokens: Any, completion_tokens: Any, messages: l
         "base_last_fp": message_fingerprint(last),
         "base_prefix_fp": _priced_prefix_fingerprint(messages, len(messages)),
     }
+    if reasoning_context is not None:
+        anchor["reasoning_context"] = dict(reasoning_context)
+    return anchor
+
+
+def _reasoning_boundary_fingerprint(messages: list[dict[str, Any]]) -> str:
+    from agent.message_sanitization import reasoning_turn_start
+
+    start = reasoning_turn_start(messages)
+    raw = json.dumps([start, message_fingerprint(messages[start]) if start >= 0 else None])
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def reasoning_usage_context(agent: Any, messages: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """The route and user boundary whose reasoning projection the provider priced.
+
+    Full-history replay is stable across user boundaries. Current-turn replay is not:
+    the next user message retires the previous tool loop's thinking from the wire.
+    Native transports retain their existing anchor contract.
+    """
+    if getattr(agent, "api_mode", None) != "chat_completions":
+        return None
+    from agent.message_sanitization import reasoning_route_for_agent
+
+    route = reasoning_route_for_agent(agent)
+    facts = [getattr(agent, key, "") or "" for key in ("api_mode", "provider", "model", "base_url")]
+    raw = json.dumps([*facts, route.pad, sorted(route.carriers or ()), route.replay_history], default=str)
+    return {
+        "route": hashlib.sha256(raw.encode()).hexdigest(),
+        "boundary": None if route.replay_history else _reasoning_boundary_fingerprint(messages),
+    }
+
+
+def prepare_reasoning_usage_accounting(agent: Any, messages: list[dict[str, Any]]) -> None:
+    """Retire usage that priced a different reasoning projection before estimating pressure.
+
+    This is not a compression: its pending-verification and rearm state must survive.
+    Only the old prompt-size floor and its rough pairing cease to represent this request.
+    """
+    compressor = getattr(agent, "context_compressor", None)
+    if compressor is not None:
+        compressor._reasoning_echo_flag = bool(getattr(agent, "_reasoning_echo_flag", False))
+    context = reasoning_usage_context(agent, messages)
+    anchor = getattr(agent, "_usage_anchor", None)
+    previous = (anchor.get("reasoning_context") if isinstance(anchor, dict)
+                else getattr(agent, "_reasoning_usage_context", None))
+    filtered = context is not None and context["boundary"] is not None
+    if previous != context and (previous is not None or filtered):
+        set_usage_anchor(agent, None)
+        if compressor is not None:
+            compressor.last_real_prompt_tokens = compressor.last_compression_rough_tokens = 0
+    agent._reasoning_usage_context = context
 
 
 def _anchor_matches(messages: list[dict[str, Any]], anchor: dict[str, Any]) -> bool:
@@ -111,6 +166,10 @@ def anchored_context_tokens(messages: list[dict[str, Any]], anchor: Optional[dic
     in completion_tokens). ``charge_stale_thinking`` is forwarded to the delta estimate."""
     if not isinstance(anchor, dict) or not isinstance(messages, list) or not _anchor_matches(messages, anchor):
         return None
+    context = anchor.get("reasoning_context")
+    if isinstance(context, dict) and context.get("boundary") is not None:
+        if context["boundary"] != _reasoning_boundary_fingerprint(messages):
+            return None
     from agent.model_metadata import estimate_messages_tokens_rough
 
     total = int(anchor["prompt_tokens"]) + int(anchor.get("completion_tokens") or 0)
@@ -140,9 +199,14 @@ def _serialize(anchor: Any) -> Optional[dict[str, Any]]:
         or not prefix_fp
     ):
         return None
-    return {"prompt_tokens": pt, "completion_tokens": max(0, ct), "base_count": base_count,
-            "base_last_role": role if isinstance(role, str) else None, "base_last_fp": fp,
-            "base_prefix_fp": prefix_fp}
+    serialized = {"prompt_tokens": pt, "completion_tokens": max(0, ct), "base_count": base_count,
+                  "base_last_role": role if isinstance(role, str) else None, "base_last_fp": fp,
+                  "base_prefix_fp": prefix_fp}
+    context = anchor.get("reasoning_context")
+    if (isinstance(context, dict) and isinstance(context.get("route"), str)
+            and (context.get("boundary") is None or isinstance(context.get("boundary"), str))):
+        serialized["reasoning_context"] = {"route": context["route"], "boundary": context.get("boundary")}
+    return serialized
 
 
 def persist_usage_anchor(agent: Any, anchor: Optional[dict[str, Any]]) -> None:
@@ -162,6 +226,8 @@ def persist_usage_anchor(agent: Any, anchor: Optional[dict[str, Any]]) -> None:
 def set_usage_anchor(agent: Any, anchor: Optional[dict[str, Any]], *, turn_base: bool = False) -> None:
     """Install ``anchor`` on the agent (``None`` clears) and mirror it to the session row."""
     agent._usage_anchor = anchor
+    if isinstance(anchor, dict) and isinstance(anchor.get("reasoning_context"), dict):
+        agent._reasoning_usage_context = dict(anchor["reasoning_context"])
     if turn_base or anchor is None:
         agent._turn_base_usage_anchor = anchor
     persist_usage_anchor(agent, anchor)

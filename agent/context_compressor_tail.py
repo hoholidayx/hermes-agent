@@ -202,3 +202,19 @@ def with_pruned_row_skill_safety_rule(original: list[dict[str, Any]], pruned: li
         if isinstance(content, str) and SKILL_PRUNED_MARKER_PREFIX in content and content != before.get("content"):
             return [*pruned[:i], {**after, "content": content + _SKILL_SAFETY_SUFFIX}, *pruned[i + 1:]]
     return pruned
+
+
+def tail_row_pricer(compressor: Any, messages: list[dict[str, Any]]):
+    """Price the same user-turn reasoning projection used by request assembly and preflight."""
+    from agent.context_compressor import _estimate_msg_budget_tokens, _last_assistant_index
+    from agent.message_sanitization import project_reasoning_for_request, reasoning_route_for_agent
+
+    if getattr(compressor, "api_mode", "") == "chat_completions":
+        projected = project_reasoning_for_request(messages, reasoning_route_for_agent(compressor))
+        return lambda i: _estimate_msg_budget_tokens(projected[i])
+    native_budget = compressor._native_anthropic_budget()
+    if native_budget:
+        return lambda i: native_budget(messages[i])
+    newest = _last_assistant_index(messages)
+    charge_all = compressor._stale_thinking_on_wire()
+    return lambda i: _estimate_msg_budget_tokens(messages[i], charge_all or i == newest)

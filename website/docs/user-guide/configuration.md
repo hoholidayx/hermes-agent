@@ -1966,6 +1966,42 @@ agent:
 
 When unset (default), reasoning effort defaults to "medium" — a balanced level that works well for most tasks. Setting a value overrides it — higher reasoning effort gives better results on complex tasks at the cost of more tokens and latency.
 
+### Reasoning replay (`reasoning_echo`)
+
+Chat Completions requests keep reasoning within the current user turn by default, including all
+iterations of an in-flight tool loop. When the next user message arrives, Hermes omits reasoning
+from earlier turns from the API request. The original transcript, tool calls, and tool results stay
+intact; existing sessions receive the same filtering when resumed.
+
+```yaml
+model:
+  reasoning_echo: false  # default: current user turn only; true: include earlier turns
+```
+
+`model.reasoning_echo` takes precedence over the compatibility alias `agent.reasoning_echo`,
+including an explicit `false`. The setting is read at the beginning of each user turn and stays
+fixed during that turn's tool iterations. A `fallback_providers` entry inherits the primary setting
+unless it declares its own `reasoning_echo: true` or `false`.
+
+This controls replay, not whether the model generates reasoning or displays it. Provider-required
+tool-loop reasoning and protocol signatures are preserved; strict routes still receive no
+unsupported reasoning fields. Native Anthropic, Bedrock, and Responses replay contracts are unchanged.
+
+DeepSeek uses the same `false` default. Its provider/model/host detection only supplies reasoning
+needed by the active tool loop; it does not enable historical replay or put reasoning back onto
+completed user turns when the setting is off. This is a Chat Completions policy, regardless of
+whether the route connects directly to a vendor or through a compatible gateway.
+
+Context compression serializes message content, tool calls, and tool results for the summarizer;
+it does not include separate reasoning fields, and strips inline `<think>` blocks from assistant
+content. Retained original messages can still hold reasoning in the stored transcript, but requests
+after compression apply the same replay policy. Compression pressure and retained-tail budgets
+also follow the reasoning actually sent, so filtered historical reasoning does not consume those budgets.
+
+After updating Hermes code, restart already-running gateway processes to load the new policy.
+Once the updated code is running, configuration changes apply at the next user turn. Existing
+sessions need no reset or database migration.
+
 ### Answer length (`text_verbosity`)
 
 Responses-API models (OpenAI GPT-5 family and later, direct OpenAI, ChatGPT Codex and Azure routes) also accept a separate knob for how long the final natural-language answer is, independent of reasoning depth:

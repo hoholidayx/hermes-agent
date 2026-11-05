@@ -51,6 +51,8 @@ def _preflight_request_tokens(
 ) -> int:
     """Token estimate for automatic preflight compression: a valid provider usage anchor,
     else the checkpoint-pruned native wire payload, else the generic estimator."""
+    from agent.usage_anchor import prepare_reasoning_usage_accounting
+    prepare_reasoning_usage_accounting(agent, messages)
     anchored = anchored_context_tokens(messages, getattr(agent, "_usage_anchor", None))
     agent._request_pressure_anchored = anchored is not None
     if anchored is not None:
@@ -72,6 +74,10 @@ def _preflight_request_tokens(
         )
     charge_stale_thinking = _agent_stale_thinking_on_wire(agent)
     estimate_messages = messages
+    if getattr(agent, "api_mode", "") == "chat_completions":
+        from agent.message_sanitization import project_reasoning_for_request, reasoning_route_for_agent
+        estimate_messages = project_reasoning_for_request(messages, reasoning_route_for_agent(agent))
+        charge_stale_thinking = True  # The projection has already applied the complete user-turn scope.
     if charge_stale_thinking and getattr(agent, "api_mode", "") == "anthropic_messages":
         from agent.anthropic_thinking_policy import native_anthropic_preserves_prior_thinking
 
@@ -104,7 +110,8 @@ def _agent_stale_thinking_on_wire(agent: Any) -> bool:
         from agent.message_sanitization import stale_thinking_reaches_wire
 
         return stale_thinking_reaches_wire(
-            *(_str_attr(agent, k) for k in ("api_mode", "provider", "model", "base_url"))
+            *(_str_attr(agent, k) for k in ("api_mode", "provider", "model", "base_url")),
+            echo_opt_in=bool(getattr(agent, "_reasoning_echo_flag", False))
         )
     except Exception:
         return True
@@ -1134,6 +1141,8 @@ def build_turn_context(
     from tools.skill_provenance import set_review_attended
     set_review_attended(getattr(agent, "_review_attended", False))
     agent._restore_primary_runtime()
+    if callable(_refresh_echo := getattr(agent, "_refresh_reasoning_echo_for_turn", None)):
+        _refresh_echo()
     _publish_runtime_main(agent)
     _refresh_mcp_tools_between_turns(agent)
 
@@ -1316,6 +1325,7 @@ def _sanitize_model_for(agent: Any, moa_config: Any) -> Any:
 def build_api_messages(
     agent: Any, messages: list[dict[str, Any]], *, current_turn_user_idx: Any,
     ext_prefetch_cache: Any, plugin_user_context: Any, moa_config: Any, active_system_prompt: Any,
+    preserve_reasoning_sources: bool = False,
 ) -> tuple[list[dict[str, Any]], str]:
     """Build the wire copy of ``messages`` for one API call plus the effective system
     message. Returns ``(api_messages, effective_system)``.
@@ -1359,7 +1369,8 @@ def build_api_messages(
         # the same set, so it never prices bytes the provider never receives.
         _api_content = api_msg.pop("api_content", None)
         for key in PERSISTENCE_ONLY_MESSAGE_FIELDS:
-            api_msg.pop(key, None)
+            if not (preserve_reasoning_sources and key in {"display_kind", "display_metadata"}):
+                api_msg.pop(key, None)
 
         # Inject ephemeral context (memory prefetch + pre_llm_call user hooks)
         # at API time only; `messages` is untouched beyond the api_content stamp.
@@ -1386,7 +1397,8 @@ def build_api_messages(
 
         # Replay stored reasoning on every carrier the active route reads (and strip the
         # rest): message_sanitization.reasoning_replay_route owns the decision.
-        agent._copy_reasoning_content_for_api(msg, api_msg)
+        if getattr(agent, "api_mode", "chat_completions") != "chat_completions":
+            agent._copy_reasoning_content_for_api(msg, api_msg)
         # finish_reason is rejected by strict APIs (e.g. Mistral).
         api_msg.pop("finish_reason", None)
         # Fill empty non-final user/assistant wire copies so the pre-call sanitizer
@@ -1426,4 +1438,7 @@ def build_api_messages(
         effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
     if effective_system:
         api_messages = [{"role": "system", "content": effective_system}] + api_messages
+    if not preserve_reasoning_sources and getattr(agent, "api_mode", "chat_completions") == "chat_completions":
+        from agent.message_sanitization import project_reasoning_for_request, reasoning_route_for_agent
+        api_messages = project_reasoning_for_request(api_messages, reasoning_route_for_agent(agent))
     return api_messages, effective_system

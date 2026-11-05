@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import re
+from copy import deepcopy
 from functools import partial
 from typing import Any, Callable, Iterable, NamedTuple
 
@@ -635,8 +636,8 @@ def _set_provider_tool_id(tc: Any, key: str, value: str) -> None:
 
 
 # -- reasoning replay policy: single owner; adapters keep only SYNTAX ----------------------
-# Every model reasons and intends that reasoning to be replayed, so every chat-completions
-# route gets its stored reasoning back BY DEFAULT, on the carrier(s) that route reads. Two
+# Chat-completions routes replay current-user-turn reasoning by default;
+# reasoning_echo opts into historical replay. Two
 # tables own the decision:
 #   * ``_REASONING_ECHO_RULES`` — the MUST-ECHO tier: a tool-call turn without a non-empty
 #     ``reasoning_content`` is an HTTP 400 there, so a missing value is padded with " " (never
@@ -684,10 +685,12 @@ _REASONING_CARRIER_ROUTES: tuple = (
 class ReasoningReplayRoute(NamedTuple):
     """``pad``: must-echo tier (missing reasoning_content -> " "). ``carriers``: the reasoning
     keys an assistant wire copy carries; ``None`` outside chat_completions, where the native
-    adapters own reasoning replay (only the must-echo pad is applied, details are untouched)."""
+    adapters own reasoning replay (only the must-echo pad is applied, details are untouched).
+    ``replay_history`` opts into reasoning from earlier user turns on chat-completions."""
 
     pad: bool
     carriers: frozenset | None
+    replay_history: bool = False
 
 
 def matches_reasoning_echo_family(family: str, provider: Any, model: Any, base_url: Any) -> bool:
@@ -754,10 +757,10 @@ def reasoning_replay_route(
         return ReasoningReplayRoute(pad, None)
     carriers = route_reasoning_carriers(provider, base_url) - frozenset(rejected)
     # A strict route never gets a reasoning key, not even the must-echo pad.
-    return ReasoningReplayRoute(pad and RC in carriers, carriers)
+    return ReasoningReplayRoute(pad and RC in carriers, carriers, bool(echo_opt_in))
 
 
-def stale_thinking_reaches_wire(api_mode: Any, provider: Any, model: Any, base_url: Any) -> bool:
+def stale_thinking_reaches_wire(api_mode: Any, provider: Any, model: Any, base_url: Any, *, echo_opt_in: bool = False) -> bool:
     """True when stale assistant reasoning text is actually replayed on the wire for the route.
 
     The single wire-truth predicate the compaction TRIGGER estimator and the tail-budget
@@ -773,10 +776,10 @@ def stale_thinking_reaches_wire(api_mode: Any, provider: Any, model: Any, base_u
     if not api_mode:
         # No route facts (a bare compressor): only the must-echo tier is known to replay.
         return needs_reasoning_echo(provider, model, base_url)
-    route = reasoning_replay_route(api_mode, provider, model, base_url)
+    route = reasoning_replay_route(api_mode, provider, model, base_url, echo_opt_in=echo_opt_in)
     if route.carriers is None:
         return (api_mode or "") != "codex_responses" and route.pad
-    return bool(route.carriers & {RC, R})
+    return route.replay_history and bool(route.carriers & {RC, R})
 
 
 def native_anthropic_accounting_projection(messages: Any) -> tuple[Any, tuple[str, ...]]:
@@ -855,6 +858,7 @@ def _apply_legacy_must_echo_pad(source_msg: dict, api_msg: dict) -> None:
 
 def apply_reasoning_content_policy(
     source_msg: dict, api_msg: dict, needs_thinking_pad: bool, carriers: frozenset | None = None,
+    replay_history: bool = False,
 ) -> None:
     """Shape an assistant replay message's reasoning keys for the active route (mutates ``api_msg``).
 
@@ -862,6 +866,7 @@ def apply_reasoning_content_policy(
     (``reasoning_replay_route``). ``carriers=None`` is a non-chat-completions wire: only the
     must-echo ``reasoning_content`` rides there and ``reasoning_details`` is left to the adapter.
     Keys the route does not read are removed, so a strict host never sees one (#45655, #70233).
+    User-turn scope is applied by ``project_reasoning_for_request`` before this carrier policy.
     """
     if source_msg.get("role") != "assistant":
         return
@@ -894,24 +899,113 @@ def _reasoning_shape(msg: dict) -> tuple:
     return tuple(msg.get(key) for key in REASONING_CARRIERS)
 
 
-def reapply_reasoning_echo(api_messages: list, needs_thinking_pad: bool, carriers: frozenset | None = None) -> int:
-    """Reconcile already-built assistant turns with the ACTIVE route.
+def reasoning_replay_key(agent: Any) -> tuple:
+    """Route identity that needs original carriers restored; field rejections only narrow them."""
+    return tuple(getattr(agent, key, None) for key in ("api_mode", "provider", "model", "base_url")) + (
+        bool(getattr(agent, "_reasoning_echo_flag", False)),
+    )
 
-    ``api_messages`` is built once under the primary; a mid-conversation fallback or a recorded
-    field rejection changes the route, so baked-in keys are reconciled both ways: TO a must-echo
-    provider the pad is re-applied (else 400), TO a strict one the keys are stripped (else 422),
-    and a carrier the new route reads is restored from the text that is still present.
-    Idempotent. Returns the number of assistant turns changed.
+
+def reasoning_route_for_agent(agent: Any) -> ReasoningReplayRoute:
+    """Resolve a live agent or a partial context-engine holder through the same route policy."""
+    getter = getattr(agent, "_reasoning_replay_route", None)
+    if callable(getter):
+        return getter()
+    return reasoning_replay_route(
+        getattr(agent, "api_mode", "chat_completions"), getattr(agent, "provider", ""),
+        getattr(agent, "model", ""), getattr(agent, "base_url", ""),
+        echo_opt_in=bool(getattr(agent, "_reasoning_echo_flag", False)),
+    )
+
+
+def reasoning_turn_start(messages: list, current_turn_user_idx: Any = None) -> int:
+    """Latest real user row, including /steer; synthetic continuations do not reset the loop.
+
+    An absent anchor denotes a resumed in-flight chain, so all its reasoning is retained.
+    The explicit prologue index is only a fallback, never allowed to hide a later /steer.
     """
-    changed = 0
-    for api_msg in api_messages:
-        if api_msg.get("role") != "assistant":
+    from agent.context_compressor import is_user_originated_turn
+
+    latest = next((i for i in range(len(messages) - 1, -1, -1)
+                   if is_user_originated_turn(messages[i])), -1)
+    if latest >= 0:
+        return latest
+    if (type(current_turn_user_idx) is int and 0 <= current_turn_user_idx < len(messages)
+            and is_user_originated_turn(messages[current_turn_user_idx])):
+        return current_turn_user_idx
+    return -1
+
+
+def _strip_reasoning_replay(message: dict, text_keys: tuple[str, ...]) -> None:
+    """Remove readable replay while preserving private protocol/signature records."""
+    private = [{k: v for k, v in d.items() if k not in text_keys}
+               for d in message.get(RD) or () if isinstance(d, dict)
+               and str(d.get("type") or "").endswith(".native_assistant")]
+    for key in (*REASONING_CARRIERS, *text_keys):
+        message.pop(key, None)
+    if private:
+        message[RD] = private
+
+
+def project_reasoning_for_request(
+    messages: list, route: ReasoningReplayRoute, *, current_turn_user_idx: Any = None,
+) -> list:
+    """Independent send copy; canonical history retains every carrier for display and fallback.
+
+    Scope and carrier compatibility are separate: provider detection may require a current
+    tool-loop pad, but can never opt a closed route back into historical reasoning replay.
+    """
+    from agent.reasoning_carriers import declared_carrier_keys
+
+    projected = deepcopy(messages)
+    start = reasoning_turn_start(messages, current_turn_user_idx)
+    _, text_keys = declared_carrier_keys()
+    for index, (source, target) in enumerate(zip(messages, projected)):
+        if not isinstance(source, dict) or source.get("role") != "assistant":
             continue
-        before = _reasoning_shape(api_msg)
-        if carriers is None and needs_thinking_pad and api_msg.get(RC):
-            continue
-        apply_reasoning_content_policy(api_msg, api_msg, needs_thinking_pad, carriers)
-        changed += _reasoning_shape(api_msg) != before
+        if route.carriers is not None and not route.replay_history and index < start:
+            _strip_reasoning_replay(target, text_keys)
+        else:
+            # On chat-completions, absent reasoning only needs padding on tool calls.
+            # Native adapters retain their legacy must-echo behaviour byte-for-byte.
+            pad = route.pad and (route.carriers is None or bool(source.get("tool_calls")) or route.replay_history)
+            apply_reasoning_content_policy(source, target, pad, route.carriers)
+    return projected
+
+
+def reconcile_reasoning_carriers(messages: list, route: ReasoningReplayRoute) -> list:
+    """Narrow an already-scoped request after recovery, without reclassifying synthetic users.
+
+    Display metadata has been stripped at this point. Existing pads identify current-loop
+    requirements; an absent key on a completed turn must never be padded back into history.
+    """
+    projected = deepcopy(messages)
+    for message in projected:
+        if isinstance(message, dict) and message.get("role") == "assistant":
+            apply_reasoning_content_policy(message, message, route.pad and bool(message.get(RC)), route.carriers)
+    return projected
+
+
+def reapply_reasoning_echo(
+    api_messages: list, needs_thinking_pad: bool, carriers: frozenset | None = None,
+    replay_history: bool = False,
+) -> int:
+    """Reconcile a request copy with the active route, without adding stale must-echo pads."""
+    if carriers is None:
+        changed = 0
+        for msg in api_messages:
+            if msg.get("role") != "assistant" or (needs_thinking_pad and msg.get(RC)):
+                continue
+            before = _reasoning_shape(msg)
+            apply_reasoning_content_policy(msg, msg, needs_thinking_pad, carriers)
+            changed += before != _reasoning_shape(msg)
+        return changed
+    projected = project_reasoning_for_request(
+        api_messages, ReasoningReplayRoute(needs_thinking_pad, carriers, replay_history),
+    )
+    changed = sum(_reasoning_shape(a) != _reasoning_shape(b) for a, b in zip(api_messages, projected)
+                  if isinstance(a, dict) and a.get("role") == "assistant")
+    api_messages[:] = projected
     return changed
 
 

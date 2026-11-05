@@ -3837,7 +3837,6 @@ class GatewayRunner(
 
     @dataclasses.dataclass
     class _HygieneSettings:
-        """Resolved session-hygiene configuration for one inbound turn."""
         model: str
         threshold_pct: float
         compression_enabled: bool
@@ -3851,6 +3850,7 @@ class GatewayRunner(
         base_url: Optional[str]
         api_key: Optional[str]
         data: Any
+        api_mode: Optional[str] = None
 
     @dataclasses.dataclass
     class _HygieneAttempt:

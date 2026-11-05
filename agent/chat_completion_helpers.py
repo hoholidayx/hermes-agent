@@ -2126,6 +2126,9 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
     ``reasoning_details`` is kept: the anthropic_messages converter rebuilds signed thinking
     blocks from it, and the chat-completions transport already drops it on the wire for routes
     that do not replay it (``_chat_summary_attempt`` -> ``_build_api_kwargs``)."""
+    from agent.message_sanitization import project_reasoning_for_request, reasoning_route_for_agent
+    chat = getattr(agent, "api_mode", "") == "chat_completions"
+    messages = project_reasoning_for_request(messages, reasoning_route_for_agent(agent)) if chat else messages
     needs_sanitize = agent._should_sanitize_tool_calls()
     sanitize_model = agent.model
     if needs_sanitize and agent.provider == "moa":
@@ -2135,7 +2138,8 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
     api_messages = []
     for msg in messages:
         api_msg = msg.copy()
-        agent._copy_reasoning_content_for_api(msg, api_msg)
+        if not chat:
+            agent._copy_reasoning_content_for_api(msg, api_msg)
         for key in _SUMMARY_FOREIGN_MESSAGE_KEYS:
             api_msg.pop(key, None)
         # Mirror of the transport's role-qualified strip: ``name`` is
@@ -2145,13 +2149,7 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
             api_msg.pop("name", None)
         # api_content holds the exact bytes the main loop sent; substituting (not popping)
         # keeps the summary's prefix identical instead of re-prefilling the largest context.
-        # Strict OpenAI-compatible gateways (Fireworks-backed OpenCode Go, Mistral, Moonshot/Kimi) reject
-        # any message key outside the Chat Completions schema. The main loop drops these via
-        # ChatCompletionsTransport.convert_messages(), but the summary path hand-builds messages and calls
-        # chat.completions.create() directly, bypassing the transport — so mirror that sanitization here:
-        # tool_name (SQLite FTS bookkeeping), the codex_* reasoning carriers, timestamp (preserved on
-        # gateway user replay entries for the stale-confirmation expiry check — #47868 rejection class), and
-        # every Hermes-internal underscore-prefixed scaffolding key.
+        # The direct summary sender must mirror the transport's foreign-key cleanup.
         substitute_api_content(api_msg)
         if needs_sanitize:
             agent._sanitize_tool_calls_for_strict_api(api_msg, model=sanitize_model)
