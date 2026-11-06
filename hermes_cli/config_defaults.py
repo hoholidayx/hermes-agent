@@ -1850,10 +1850,8 @@ DEFAULT_CONFIG = {
         "kernel_idle_timeout": 1800,
         "max_session_kernels": 4,
     },
-    # Tool Search replaces deferred tools in the model-facing array with the
-    # tool_search / tool_describe / tool_call bridges and surfaces them on demand.
-    # Working-set core tools stay eager, while the explicit ``defer`` list below
-    # may include cold, event-triggered built-ins as well as plugin/MCP tools.
+    # Tool Search replaces deferred tools with tool_search / tool_describe / tool_call.
+    # Working-set core tools stay eager; defer may include cold built-ins and plugins/MCP.
     "tools": {
         "tool_search": {
             # Tiered: tier 0 (no deferred tools) = everything eager; tier 1 = bridge + a
@@ -1864,6 +1862,8 @@ DEFAULT_CONFIG = {
             # budget-gated mode; keep it the default so explicit "on"/"off" pins are unaffected).
             # "off" = pass-through, no bridge.
             "enabled": "auto",
+            # Exact permitted names kept direct; wins over defer and is frozen per session.
+            "eager": [],
             # Listing budget as % of the model's context length; effective budget = min(this % of
             # context, listing_max_tokens). Range 0..100.
             "threshold_pct": 5,
@@ -1880,8 +1880,8 @@ DEFAULT_CONFIG = {
             # Range 200..60000.
             "listing_max_tokens": 4000,
             # Tools replaced by the bridge by default. This list intentionally includes cold,
-            # event-triggered built-ins; an explicit list replaces it wholesale and [] keeps every
-            # tool eager. The runtime fallback in tools/tool_search.py derives from this value.
+            # event-triggered built-ins; an explicit list replaces it wholesale and [] removes
+            # explicit core deferrals. Plugins/MCP still defer unless named in eager.
             "defer": [
                 "computer_use", "session_search", "image_generate",
                 "todo_list", "process_manage", "cronjob_manage", "browser_vault",

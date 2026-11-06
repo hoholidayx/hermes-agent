@@ -675,7 +675,8 @@ interim messages only for itself and does not change the chat's mode. One except
 first turn after a Hermes update rebuilds the session's tool definitions from the new
 code, so the chat adopts the current setting at that turn.
 
-Listing `delegate_task` in `tools.tool_search.defer` turns inline off for that session:
+Listing `delegate_task` in `tools.tool_search.defer` turns inline off for that session
+unless it is also named in `tools.tool_search.eager` (the eager override wins):
 the model loads the regular (background) `delegate_task` schema through `tool_describe`,
 and delegation follows the schema the model sees.
 

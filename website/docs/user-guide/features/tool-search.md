@@ -10,7 +10,7 @@ session, their JSON schemas can consume a substantial fraction of the
 context window on every turn — even when only a few of them are relevant
 to what the user actually asked for.
 
-**Tool Search** is Hermes' opt-in progressive-disclosure layer for that
+**Tool Search** is Hermes' progressive-disclosure layer for that
 problem. When activated, MCP and plugin tools are replaced in the
 model-visible tools array by three bridge tools, and the model loads each
 specific tool's schema on demand.
@@ -23,8 +23,9 @@ Hermes keeps its working-set core tools (`terminal`, `read_file`, `write_file`,
 may be deferred when they are named in `tools.tool_search.defer`; the shipped
 curated list covers tools such as `computer_use`, `session_search`, and selected
 desktop helpers. MCP and non-core plugin tools remain eligible automatically.
-An explicit `defer` list replaces the curated list, and `defer: []` keeps every
-tool eager.
+An explicit `defer` list replaces the curated list; `defer: []` removes explicit
+core deferrals. Use `eager` to keep selected plugin/MCP tools direct, or
+`enabled: off` to keep all permitted tools direct.
 :::
 
 ## How it works
@@ -105,12 +106,13 @@ tiers on the next assembly.
 tools:
   tool_search:
     enabled: auto       # auto (default), on, or off
+    eager: []           # exact permitted tool names to keep directly callable
     threshold_pct: 5    # listing budget as a percentage of context
     search_default_limit: 5
     max_search_limit: 25
     listing: auto       # embed a grouped name+description catalog manifest
     listing_max_tokens: 4000
-    defer:              # replace the curated default; [] keeps every tool eager
+    defer:              # replace the curated core deferrals; plugins/MCP still defer
       - computer_use
       - session_search
       - image_generate
@@ -127,12 +129,33 @@ shipped curated set; the runtime fallback uses the same value.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `auto` | `auto`/`on` activate whenever at least one deferred tool exists; `off` disables entirely (everything stays eager). `auto` is currently an alias of `on` — it is reserved for a future mode that inlines schemas when they fit the context and defers only when they don't. Pin `on` or `off` if you want today's behavior guaranteed across upgrades. |
+| `eager` | `[]` | Exact names of already enabled tools to keep directly callable, including plugin/MCP tools. Wins over `defer` if a name appears in both. Does not enable tools, bypass availability or authorization, install plugins, or accept wildcards. |
 | `threshold_pct` | `5` | Listing budget as a percentage of the active model's context length. Range 0–100. |
 | `search_default_limit` | `5` | Hits returned per query when the model calls `tool_search` without a `limit`. |
 | `max_search_limit` | `25` | Hard upper bound the model can request via `limit` (per query). Range 1–50. |
 | `listing` | `auto` | Embed a skills-style manifest of every deferred tool (name + first sentence of its description, ≤60 chars, grouped by MCP server) in the `tool_search` bridge description. `auto` includes it when it fits the budget (falling back to names-only, then to the tier-2 server summary); `on`/`off` force either way. |
 | `listing_max_tokens` | `4000` | Absolute cap on the embedded listing, regardless of context size. Range 200–60000. Large catalogs degrade to names-only or per-server summaries, keeping full schemas available through search. |
-| `defer` | Curated list | Tool names replaced by the bridge by default. The list may include cold built-in tools as well as MCP/plugin tools; an explicit list replaces it, and `[]` disables deferral for every tool. |
+| `defer` | Curated list | Explicit tool names replaced by the bridge. An explicit list replaces the curated list; `[]` removes explicit core deferrals. Plugins/MCP still defer by default unless named in `eager`. |
+
+For example, `eager: [my_frequent_plugin_tool]` exposes that plugin tool's full schema
+without exposing every other plugin. Its toolset must already be enabled for the session.
+The resolved Tool Search policy is saved with the session's tool-schema prefix: changing
+the configuration applies to new sessions. Configuration edits alone do not rebuild an
+existing or resumed session's routing or schema prefix. Older session pins without this
+policy retain the legacy empty eager list; code upgrades still use the normal version-aware
+schema reconciliation. Availability and authorization are checked against the live registry.
+
+```bash
+hermes config set tools.tool_search.eager '["my_frequent_plugin_tool"]'
+hermes config get tools.tool_search.eager
+# Restore the default for new sessions:
+hermes config set tools.tool_search.eager '[]'
+```
+
+Use `/new` to adopt changed routing. Each new agent reads its own profile's configuration,
+including a delegated agent created during another agent's frozen tool dispatch.
+This setting controls tool definitions; [`agent.tool_history_echo`](../configuration.md#tool-history-replay-tool_history_echo)
+separately controls replay of completed tool messages.
 
 Per-call array caps are internal safety bounds, not configuration. Over-cap
 calls return an error so the model can retry with a smaller batch.

@@ -553,6 +553,28 @@ tool_output:
   max_lines: 500
 ```
 
+## 常用工具常驻（`tool_search.eager`）
+
+让已经启用的常用插件或 MCP 工具直接出现在模型工具列表中，其他工具继续通过 Tool Search 按需发现：
+
+```yaml
+tools:
+  tool_search:
+    enabled: auto
+    eager: [my_frequent_plugin_tool]  # 默认 []
+```
+
+`eager` 按精确工具名匹配，并在工具集、可用性和权限过滤后生效。同名同时出现在 `eager` 与 `defer` 时，
+`eager` 优先；它不会启用工具、安装插件、展开通配符或放宽权限。`defer: []` 只清除显式的核心工具延迟项，
+插件和 MCP 工具仍默认延迟，除非列在 `eager` 中。
+
+使用 `hermes config set tools.tool_search.eager '["my_frequent_plugin_tool"]'` 设置，
+`hermes config get tools.tool_search.eager` 查看，`hermes config set tools.tool_search.eager '[]'` 恢复默认。
+修改在新会话（`/new`）生效，现有会话在重启恢复后也保留保存的路由。工具执行期间创建的子 agent 仍读取其自身
+profile 的配置，不继承父会话冻结的常驻列表。旧版会话未保存该策略时按旧行为使用空 `eager` 列表。
+
+此设置控制工具定义，与[工具历史回传](#工具历史回传tool_history_echo)分别配置，不改变原始聊天记录。
+
 ## 全局工具集禁用
 
 要在 CLI 和每个 gateway 平台上统一禁用特定工具集，请在 `agent.disabled_toolsets` 下列出其名称：

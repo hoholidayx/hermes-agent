@@ -158,8 +158,10 @@ def refresh_agent_mcp_tools(
     snapshot_generation = registry._generation
     from agent.delegation_backends import adopt_built_backend, saved_backend
     built_backend = saved_backend()
-    new_defs = agent_tool_surface(agent, list(
-        get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=quiet_mode) or []))
+    from tools.tool_search_policy import bind_agent_config
+    with bind_agent_config(agent):
+        new_defs = agent_tool_surface(agent, list(
+            get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=quiet_mode) or []))
     new_names = {_def_name(t) for t in new_defs}
     # Post-build families re-appended on LOCALS only; live attributes untouched until publish.
     staged_engine_names = _reinject_post_build_tools(agent, new_defs, new_names)
@@ -222,7 +224,9 @@ def persist_agent_tool_names(agent) -> None:
     if not db or not session_id:
         return
     try:
-        pin = {"version": tool_pin_version(), "tools": _agent_tool_defs(agent)}
+        from tools.tool_search_policy import agent_config
+        pin = {"version": tool_pin_version(), "tools": _agent_tool_defs(agent),
+               "tool_search": agent_config(agent).as_raw()}
         if isinstance(backend := getattr(agent, "_delegation_backend", None), str) and backend:
             pin["delegation_backend"] = backend  # what its delegate_task was built from: the session routes on it
         db.update_session_tool_names(session_id, pin)
@@ -334,6 +338,7 @@ def restore_agent_tool_prefix(agent, saved) -> bool:
     process that wrote the pin a pinned Tool Search bridge tool keeps its slot (it is synthesized, never
     registered, exactly as the between-turns refresh keeps it) and a tool new only because its ``check_fn``
     flipped stays out (``_pin_restore_held``)."""
+    _restore_tool_search_policy(agent, saved)
     pinned, same_code, pinned_defs = _pinned_tool_defs(saved, {_def_name(t): t for t in _agent_tool_defs(agent)})
     if not pinned:
         return False
@@ -367,6 +372,24 @@ def restore_agent_tool_prefix(agent, saved) -> bool:
     if not same_code or merged != list(pinned):
         persist_agent_tool_names(agent)
     return changed
+
+
+def _restore_tool_search_policy(agent, saved) -> None:
+    """Rebuild under the saved routing before prefix merge; never introduce current eager tools."""
+    from tools.tool_search_policy import bind_agent_config, restore_agent_config
+    if not restore_agent_config(agent, saved):
+        return
+    from model_tools import get_tool_definitions
+    from toolsets import agent_tool_surface
+    with bind_agent_config(agent):
+        definitions = agent_tool_surface(agent, list(get_tool_definitions(
+            enabled_toolsets=getattr(agent, "enabled_toolsets", None),
+            disabled_toolsets=getattr(agent, "disabled_toolsets", None), quiet_mode=True) or []))
+    names = {_def_name(t) for t in definitions}
+    _reinject_post_build_tools(agent, definitions, names)
+    _reinject_authorized_dynamic_tools(agent, definitions, names)
+    with _agent_tools_lock:
+        agent.tools, agent.valid_tool_names = definitions, names
 
 
 def _merge_preserving_prefix(current_defs: list, new_defs: list, registered_names: set,

@@ -155,6 +155,14 @@ Subagents, side agents, cron jobs, and Kanban workers keep their existing histor
 for transport support and configuration timing, including frozen sessions that need a new session
 to pick up a changed profile setting.
 
+### Selected tools always available
+
+Keep a frequently used, already enabled plugin or MCP tool directly callable with
+`hermes config set tools.tool_search.eager '["my_frequent_plugin_tool"]'`.
+Other tools continue through Tool Search. This exact-name list takes effect in new sessions;
+it does not enable tools or change tool-history replay. See [Tool Search](website/docs/user-guide/features/tool-search.md#configuration)
+for precedence, session persistence, and rollback.
+
 ---
 
 ## Skip the API-key collection — Nous Portal

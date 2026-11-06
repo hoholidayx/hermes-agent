@@ -370,11 +370,13 @@ def _tool_search_scoped_names(agent) -> frozenset:
     except Exception:
         return frozenset()
     try:
-        return _ts.scoped_deferrable_names(model_tools.get_tool_definitions(
-            enabled_toolsets=getattr(agent, "enabled_toolsets", None),
-            disabled_toolsets=getattr(agent, "disabled_toolsets", None),
-            quiet_mode=True, skip_tool_search_assembly=True,
-        ) or [])
+        from tools.tool_search_policy import bind_agent_config
+        with bind_agent_config(agent):
+            return _ts.scoped_deferrable_names(model_tools.get_tool_definitions(
+                enabled_toolsets=getattr(agent, "enabled_toolsets", None),
+                disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                quiet_mode=True, skip_tool_search_assembly=True,
+            ) or [])
     except Exception:
         return frozenset()
 
@@ -404,7 +406,9 @@ def _unwrap_tool_search_call(
         from tools import tool_search as _ts
         if function_name != _ts.TOOL_CALL_NAME:
             return function_name, function_args, None
-        underlying, underlying_args, err = _ts.resolve_underlying_call(function_args)
+        from tools.tool_search_policy import bind_agent_config
+        with bind_agent_config(agent):
+            underlying, underlying_args, err = _ts.resolve_underlying_call(function_args)
         if err or not underlying:
             return function_name, function_args, None
         if underlying == _ts.CONNECTOR_BATCH_SENTINEL:
@@ -1709,7 +1713,8 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
     def _execute(next_args: dict) -> Any:
         import model_tools
 
-        with model_tools.suppress_post_tool_call_hook():
+        from tools.tool_search_policy import bind_agent_config
+        with model_tools.suppress_post_tool_call_hook(), bind_agent_config(agent):
             return model_tools.handle_function_call(
                 function_name,
                 next_args,

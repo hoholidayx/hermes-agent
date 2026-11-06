@@ -100,6 +100,13 @@ agent:
 采用冻结配置的现有会话需要新建会话才能读取修改后的 profile 设置。
 支持的请求协议与配置生效时机详见[配置文档](website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/configuration.md#工具历史回传tool_history_echo)。
 
+### 常用工具常驻
+
+使用 `hermes config set tools.tool_search.eager '["my_frequent_plugin_tool"]'`
+让已经启用的常用插件或 MCP 工具保持直接可调用，其他工具继续通过 Tool Search 发现。
+配置按精确工具名匹配，在新会话生效；不会启用工具或改变工具历史裁剪。
+优先级、会话恢复及回滚方式见[配置文档](website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/configuration.md#常用工具常驻tool_searcheager)。
+
 ---
 
 ## 省去到处收集 API Key — Nous Portal

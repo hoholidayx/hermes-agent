@@ -56,7 +56,9 @@ Adding one: register in that table (no `if name == ...` chain); `tools/todo_tool
 
 - **Prompt caching must not break.** Never alter past context, change toolsets, reload memories,
   or rebuild the system prompt mid-conversation. The system prompt is byte-stable for the life of
-  a conversation; the ONLY context mutation is compression. Anything that must inject content
+  a conversation. Context compression may rebuild history; explicit primary Chat Completions
+  `agent.tool_history_echo: false` may project old tool records out of requests at the next normal
+  user boundary, without changing canonical history or `tools[]`. Anything that must inject content
   mid-conversation rides a **user message or tool result**, never the system prompt: skill slash
   commands (`agent/skill_commands.py`) inject as a user message; subdirectory `AGENTS.md` hints
   (`agent/subdirectory_hints.py`) append to the tool result (head+tail truncated past `_MAX_HINT_CHARS = 32_000`;

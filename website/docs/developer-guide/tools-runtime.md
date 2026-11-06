@@ -121,6 +121,27 @@ The main entry point is `model_tools.get_tool_definitions(enabled_toolsets, disa
 
 Old toolset names with `_tools` suffixes (e.g., `web_tools`, `terminal_tools`) are mapped to their modern tool names via `_LEGACY_TOOLSET_MAP` for backward compatibility.
 
+### Session-frozen Tool Search routing
+
+After registry filtering, `tools.tool_search` decides which permitted tools are direct
+and which use the bridge. `eager` is an exact-name override of `defer`, not an enablement
+or authorization mechanism. Unavailable and disabled tools stay unavailable.
+
+`tools/tool_search_policy.py` snapshots the resolved policy for each agent, binds it
+through definition building and sequential/parallel dispatch, and includes it in the
+schema cache key. Initializing a nested agent temporarily clears the caller's routing
+binding so its own profile settings are read; the caller's binding is then restored.
+
+The policy is persisted beside the session's tool-schema pin and restored before merging
+that prefix. Pins from before this field retain legacy `eager: []`; a missing/empty pin
+does not override a new agent's current settings. Registry availability and permissions
+remain live. Do not inject schemas through request middleware alone: the agent's
+`valid_tool_names`, bridge catalog and dispatch must agree with its frozen policy.
+
+Configuration changes apply to new sessions; code-version schema reconciliation and
+compression-boundary refresh retain their existing rules. This controls definitions,
+not the separate `agent.tool_history_echo` projection of historical tool messages.
+
 ## Dispatch
 
 At runtime, tools are dispatched through the central registry, with agent-loop exceptions for some agent-level tools such as memory/todo/session-search handling.

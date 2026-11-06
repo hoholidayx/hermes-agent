@@ -1005,6 +1005,32 @@ The MCP threshold is always capped at the (possibly context-scaled) generic per-
 
 Hermes also flags **provider-side elision**: when an MCP or web tool result embeds its own truncation markers (`...N more items`, `"has_more": true`, "saved to sandbox" notes), a one-line notice is appended to the result warning that the visible data is incomplete and should be paged/fetched before treating any enumeration as complete.
 
+## Selected Tools Always Available (`tool_search.eager`)
+
+Keep frequently used plugin or MCP tools directly callable without exposing every other
+tool schema:
+
+```yaml
+tools:
+  tool_search:
+    enabled: auto
+    eager: [my_frequent_plugin_tool]  # default: []
+```
+
+`eager` matches exact tool names after enabled-toolset, availability and permission
+filtering. It wins over `defer` for the same name; it does not enable tools, install
+plugins or expand wildcards. `defer: []` only removes explicit core-tool deferrals;
+plugin/MCP tools still defer unless selected by `eager`.
+
+Set with `hermes config set tools.tool_search.eager '["my_frequent_plugin_tool"]'`, inspect
+with `hermes config get tools.tool_search.eager`, and restore the default with
+`hermes config set tools.tool_search.eager '[]'`. Changes apply to new sessions (`/new`);
+existing sessions keep their saved routing, including after restart. A new delegated
+agent reads its own profile's settings rather than inheriting its caller's routing.
+
+This controls `tools[]`, independently of [tool-history replay](#tool-history-replay-tool_history_echo).
+See [Tool Search](./features/tool-search.md#configuration) for the full policy and legacy-pin behavior.
+
 ## Global Toolset Disable
 
 To suppress specific toolsets across the CLI and every gateway platform in one

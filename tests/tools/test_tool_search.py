@@ -43,7 +43,7 @@ class TestConfigParsing:
 
     def test_defer_default_is_the_registered_list_and_a_user_list_replaces_it(self, caplog):
         """#116404: the curated deferral set lives in DEFAULT_CONFIG (so ``hermes config set``
-        recognizes the key); a user list replaces it wholesale, [] keeps every tool eager, and a
+        recognizes the key); a user list replaces it wholesale, [] removes explicit core deferrals, and a
         scalar is warned about (naming the expected shape) before falling back to the default."""
         from hermes_cli.config_defaults import DEFAULT_CONFIG
         from tools.tool_search import ToolSearchConfig, _DEFAULT_DEFERRED_TOOLS
@@ -112,7 +112,7 @@ class TestClassification:
 
 
     def test_defer_override_restores_legacy_direct_gui(self):
-        """tools.tool_search.defer: [] restores the everything-eager legacy:
+        """tools.tool_search.defer: [] removes explicit GUI/core deferrals:
         GUI tools alone no longer activate the bridge."""
         from tools.registry import discover_builtin_tools
         from tools.tool_search import ToolSearchConfig, assemble_tool_defs

@@ -457,7 +457,8 @@ def test_resume_on_another_surface_restores_the_pinned_tool_bytes(monkeypatch, t
     assert json.loads(repinned)["tools"] == sent.tools  # unchanged pin, no rewrite per hop
     assert updated.tools == [*this_surface[:2], {"type": "function", "function": {**static["skill_manage"]}},
                              this_surface[2]]
-    assert upgraded_pin == {"version": "sha-after-hermes-update", "tools": updated.tools}
+    assert upgraded_pin == {"version": "sha-after-hermes-update", "tools": updated.tools,
+                            "tool_search": updated._tool_search_config.as_raw()}
 
 
 def test_a_pin_never_re_adds_a_tool_this_sessions_config_excludes(monkeypatch):

@@ -17,10 +17,10 @@ not by growing the core.
 
 Two invariants shape almost every design decision and are the lens for reviewing any change:
 
-- **Per-conversation prompt caching is sacred.** Mutating past context, swapping toolsets,
-  reloading memories or rebuilding the system prompt mid-conversation breaks the cached prefix and
-  multiplies the user's cost; the ONE exception is context compression. Slash commands that change
-  system-prompt state defer to the next session, with an opt-in `--now` (`/skills install --now`).
+- **Per-conversation prompt caching is sacred.** Never swap toolsets, reload memories or rebuild
+  the system prompt mid-conversation. Only compression and explicit primary-chat
+  `agent.tool_history_echo: false` request projection may change context; the latter preserves
+  stored history. Prompt-changing slash commands defer to the next session unless `--now` is requested.
 - **The core is a narrow waist; capability lives at the edges.** Every model tool is sent on
   every API call, so the bar for a new *core* tool is high. New capability should arrive as a
   CLI command + skill, a service-gated tool, or a plugin — not as core surface.
