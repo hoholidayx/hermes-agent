@@ -1,7 +1,7 @@
 import { MessagePrimitive, useAuiState } from '@assistant-ui/react'
 import { type FC, useState } from 'react'
 
-import { MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
+import { MarkdownTextContent, MessageTextContent } from '@/components/assistant-ui/markdown-text'
 import { messageContentText } from '@/components/assistant-ui/thread/content'
 import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { SCAFFOLD_GLYPH_CLASS, SCAFFOLD_LABEL_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
@@ -67,9 +67,23 @@ export const SystemMessage: FC = () => {
   const text = useAuiState(s => messageContentText(s.message.content))
   const asyncResult = useAuiState(s => s.message.metadata.custom?.asyncResult)
   const processResult = useAuiState(s => s.message.metadata.custom?.asyncResultKind === 'process')
+  const pluginCompletion = useAuiState(s => s.message.metadata.custom?.pluginCompletion === true)
 
   if (!text) {
     return null
+  }
+
+  if (pluginCompletion) {
+    return (
+      <MessagePrimitive.Root
+        className="w-full min-w-0 self-start py-1 pl-(--message-text-indent)"
+        data-role="system"
+        data-slot="aui_plugin-completion"
+      >
+        <MessageTextContent text={text} />
+        <MessageTimelineTimestamp />
+      </MessagePrimitive.Root>
+    )
   }
 
   if (processResult || (typeof asyncResult === 'string' && asyncResult)) {

@@ -121,8 +121,20 @@ class RemotePluginContext:
             raise TypeError("on_unload() callback must be callable")
         self._runtime.unload_callbacks.setdefault(self._plugin_key, []).append(callback)
 
-    def spawn_task(self, coro: Any, *, name: Optional[str] = None) -> Any:
-        return self._runtime.spawn(coro, name=name)
+    def spawn_task(self, coro: Any, *, name: Optional[str] = None, on_gateway_loop: bool = False) -> Any:
+        task = self._runtime.spawn(coro, name=name)
+        if on_gateway_loop:
+            # HostRuntime already owns a lasting loop; coroutines stay in their
+            # process, while plugin unload still owns their cancellation.
+            self.on_unload(task.cancel)
+        return task
+
+    async def apublish_completion(self, target: dict, *, event_id: str, text: str = "",
+                                  artifacts: list | tuple = ()) -> dict:
+        """The parent validates the issued ticket and owns the durable admission."""
+        return await asyncio.to_thread(self._runtime.ctx_call, self._plugin_key,
+                                       'apublish_completion', target, event_id=event_id,
+                                       text=text, artifacts=artifacts)
 
 
 class HostRuntime:

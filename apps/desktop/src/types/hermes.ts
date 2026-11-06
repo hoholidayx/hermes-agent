@@ -769,6 +769,7 @@ export interface SessionMessage {
     | 'hidden'
     | 'model_switch'
     | 'personality_switch'
+    | 'plugin_completion'
     | 'process_complete'
     | 'steer'
     | string

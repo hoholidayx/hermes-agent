@@ -425,6 +425,14 @@ export function messageCreatedAt(message: Pick<ChatMessage, 'timestamp'>, nowMs 
     : new Date(nowMs)
 }
 
+function machineResultMetadata(message: ChatMessage) {
+  return {
+    ...(message.pluginCompletion ? { pluginCompletion: true } : {}),
+    ...(message.asyncResult ? { asyncResult: message.asyncResult } : {}),
+    ...(message.asyncResultKind ? { asyncResultKind: message.asyncResultKind } : {})
+  }
+}
+
 export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
   const role =
     message.role === 'user' || message.role === 'assistant' || message.role === 'system' ? message.role : 'assistant'
@@ -465,8 +473,7 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
       metadata: {
         custom: {
           ...timelineMeta,
-          ...(message.asyncResult ? { asyncResult: message.asyncResult } : {}),
-          ...(message.asyncResultKind ? { asyncResultKind: message.asyncResultKind } : {})
+          ...machineResultMetadata(message)
         }
       }
     } as ThreadMessage

@@ -123,10 +123,14 @@ function codexMessageItemText(message: SessionMessage): { commentary: string[]; 
   return { commentary, reply: replies.join('') }
 }
 
-function displayContentForMessage(role: SessionMessage['role'], content: unknown): string {
+function displayContentForMessage(
+  role: SessionMessage['role'],
+  content: unknown,
+  displayKind?: SessionMessage['display_kind']
+): string {
   const rawText = textFromUnknown(content)
 
-  if (role !== 'user') {
+  if (role !== 'user' || displayKind === 'plugin_completion') {
     return rawText
   }
 
@@ -179,6 +183,7 @@ const NOTICE_DISPLAY_KINDS = [
   'model_switch',
   'async_delegation_complete',
   'process_complete',
+  'plugin_completion',
   'auto_continue',
   'personality_switch',
   // Hermes closing a failed turn, not the model speaking.
@@ -335,6 +340,19 @@ function timelineDisplayContent(message: SessionMessage, content: string): strin
   }
 
   return content
+}
+
+function transcriptIdentity(
+  message: SessionMessage,
+  index: number,
+  role: ChatMessage['role'],
+  rowId: number | undefined
+): Pick<ChatMessage, 'id' | 'pluginCompletion'> {
+  const id = `${message.timestamp || Date.now()}-${index}-${role}`
+
+  return message.display_kind === 'plugin_completion'
+    ? { id: rowId === undefined ? id : `plugin-completion-${rowId}`, pluginCompletion: true }
+    : { id }
 }
 
 export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
@@ -502,7 +520,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     const rawDisplayContent = transcriptContent(
       message.display_kind,
       message.role,
-      timelineDisplayContent(message, displayContentForMessage(message.role, content))
+      timelineDisplayContent(message, displayContentForMessage(message.role, content, message.display_kind))
     )
 
     const displayRole = isMachineNotice(message.display_kind) ? 'system' : message.role
@@ -655,7 +673,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     // prefetch ships the same messages.id as a numeric `id`. Either one lets
     // reactions address this exact row later.
     result.push({
-      id: `${message.timestamp || Date.now()}-${index}-${displayRole}`,
+      ...transcriptIdentity(message, index, displayRole, rowId),
       role: displayRole,
       parts,
       ...(message.role === 'assistant' && durableComplete !== undefined ? { durableComplete } : {}),

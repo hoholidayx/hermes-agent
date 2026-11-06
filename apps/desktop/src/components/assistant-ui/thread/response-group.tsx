@@ -15,7 +15,7 @@ export function responseMessageRole(message: GroupMessage): string {
 
   const background =
     message.role === 'system'
-      ? Boolean(custom?.asyncResult || custom?.asyncResultKind)
+      ? Boolean(custom?.asyncResult || custom?.asyncResultKind || custom?.pluginCompletion)
       : message.role === 'user' && PROCESS_NOTIFICATION_RE.test(messageContentText(message.content))
 
   return background ? 'background' : message.role

@@ -62,6 +62,9 @@ def completion_payload(row, settled, response, captured):
     # Only the agent's reuse site sets this (never inferred from equal text): the
     # final repeats a reply the viewer already painted, so it settles in place.
     captured_result = (captured or {}).get('result') or {}
+    note = captured_result.get('completion_note')
+    if isinstance(note, dict) and note.get('display_kind') == 'plugin_completion':
+        complete['completion_note'] = note
     # A gateway-owned refusal brings its own descriptor (``session_cron.execute``); every other failed
     # turn gets the one the TUI path builds from the same result, so the viewer shows the right card.
     surface = captured_result.get('error_surface')

@@ -39,6 +39,8 @@ export type ChatMessage = {
   /** Result body only; the system text remains the compact completion label. */
   asyncResult?: string
   asyncResultKind?: 'process'
+  /** Gateway-verified plugin output, painted without creating a model reply. */
+  pluginCompletion?: boolean
   timestamp?: number
   completedAt?: number
   pending?: boolean
@@ -84,6 +86,8 @@ export type ChatMessage = {
 }
 
 export type GatewayEventPayload = {
+  /** Durable plugin note settled without a model turn; same projection as history. */
+  completion_note?: Omit<SessionMessage, 'content'> & { content?: unknown }
   /** Unix seconds supplied by tests/newer gateways; the desktop falls back to
    * its local receipt clock when older gateways omit it. */
   timestamp?: number

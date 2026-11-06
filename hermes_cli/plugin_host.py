@@ -411,6 +411,8 @@ class PluginHost:
         args = decode(params.get("args") or [], resolve)
         kwargs = decode(params.get("kwargs") or {}, resolve)
         result = getattr(ctx, method)(*args, **kwargs)
+        if asyncio.iscoroutine(result):
+            result = _run_on_gateway_loop(result)
         return self._encode_for_host(result)
 
     def _serve_facade(self, params: dict[str, Any]) -> Any:

@@ -58,6 +58,7 @@ from hermes_cli.plugins_dispatch import (
     is_valid_system_prompt_section_id, resolve_plugin_command_result,
 )
 from hermes_cli.plugins_capability_ctx import PluginCapabilityCtxMixin
+from hermes_cli.plugin_completions import PluginDeliveryCtxMixin
 from hermes_cli.plugins_ledger import PluginLedgerMixin, PluginRegistration
 from hermes_cli.plugins_registrars import _SCOPED_PROVIDER_REGISTRARS, make_scoped_provider_registrar
 from hermes_cli.plugins_state import (
@@ -227,7 +228,7 @@ class LoadedPlugin:
     deferred: bool = False
 
 
-class PluginContext(PluginCapabilityCtxMixin):
+class PluginContext(PluginCapabilityCtxMixin, PluginDeliveryCtxMixin):
     """Facade given to plugins so they can register tools and hooks."""
 
     def __init__(self, manifest: PluginManifest, manager: PluginManager):
@@ -422,17 +423,10 @@ class PluginContext(PluginCapabilityCtxMixin):
         logger.debug("Plugin %s registered on_unload callback", self.manifest.name)
         return handle
 
-    def spawn_task(self, coro, *, name: Optional[str] = None) -> asyncio.Task:
-        """Spawn a supervised asyncio task; unload/force reload cancels it. Needs a running loop."""
-        if not asyncio.iscoroutine(coro):
-            raise TypeError("spawn_task expects a coroutine")
-        loop = asyncio.get_running_loop()
-        task_name = name or f"plugin:{self.plugin_id}:task"
-        task = loop.create_task(coro, name=task_name)
-        handle = self._track("background_task", task_name, lambda: task.done() or task.cancel())
-        task.add_done_callback(lambda _t: handle.dispose())
-        logger.debug("Plugin %s spawned supervised task: %s", self.manifest.name, task_name)
-        return task
+    def spawn_task(self, coro, *, name: Optional[str] = None, on_gateway_loop: bool = False) -> Any:
+        """Spawn an unload-owned task; opt into the lasting gateway loop for background pumps."""
+        from hermes_cli.plugin_tasks import spawn
+        return spawn(self, coro, name=name, on_gateway_loop=on_gateway_loop)
 
     def register_approval_transport(self, name: str, present_fn: Callable) -> None:
         """Register a human approval transport, inactive until ``security.approval.transport:
@@ -603,17 +597,6 @@ class PluginContext(PluginCapabilityCtxMixin):
         """The calling session's client (``cli``/``tui``/``desktop``/``acp``) or messaging platform."""
         from hermes_cli.plugin_session import context_surface
         return context_surface(self._manager)
-
-    def post_message(self, text: str) -> Any:
-        """Post *text* into the session bound to this call; the handle's ``edit(text)`` updates it in
-        place. Never raises (``ok=False`` + ``error`` with no conversation): ``plugin_messages.py``."""
-        from hermes_cli.plugin_messages import post
-        return post(self, text)
-
-    async def apost_message(self, text: str) -> Any:
-        """``post_message`` for async code on the gateway loop (edit with ``await handle.aedit``)."""
-        from hermes_cli.plugin_messages import apost
-        return await apost(self, text)
 
     def ask_choice(self, question: str, choices: list) -> Optional[str]:
         """From a sync slash-command handler: ask its user to pick one of *choices* (``str`` or

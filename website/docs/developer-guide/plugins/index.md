@@ -2569,6 +2569,57 @@ services.hermes-agent.extraPlugins = [
 
 See the [Nix Setup guide](../../getting-started/nix-setup.md#plugins) for complete documentation including overlay usage and collision checking.
 
+## Deliver a local background result without a model turn
+
+Capture a delivery target from a synchronous tool or session hook while its real
+local CLI/TUI/Desktop conversation is bound. The host issues a JSON-safe opaque
+reference; persist it with the job rather than choosing a chat from environment
+variables or accepting a destination from model arguments.
+
+```python
+captured = ctx.capture_delivery_target()
+if not captured["ok"]:
+    return json.dumps(captured)
+save_job_target(captured["target"])
+
+# Later, on a supervised background task, including after the original turn:
+receipt = await ctx.apublish_completion(
+    saved_target,
+    event_id=job_id,  # same id and payload on every retry
+    text="Your image is ready.",
+    artifacts=[{"path": absolute_image_path, "mime_type": "image/png"}],
+)
+```
+
+`ok: true, accepted: true` confirms admission to the conversation's durable FIFO,
+not that a viewer is connected. The result becomes a machine note with no model
+call, including when a viewer is attached. Caption text is plain text; only
+validated artifacts become media. PNG, JPEG, GIF and WebP images are copied to
+the owning profile's stable cache, so replay does not depend on the producer's
+original file remaining present. Optional artifact `name` supplies its filename.
+
+The reference is bound to the issuing plugin, profile home and original logical
+conversation. Compression follows that conversation's continuation; changing
+windows or starting a new conversation cannot redirect it. A deleted target
+returns `error: "target_deleted", cancelled: true, retryable: false`; cancel the
+job's remaining deliveries. Other nonaccepted results report `retryable`, and
+an unconfirmed operation must retain its outbox item. Reusing an `event_id` with
+different caption or artifact descriptors returns `admission_conflict`.
+
+This API supports local sessions and isolated plugin-host processes. Capture
+from async code with `await asyncio.to_thread(ctx.capture_delivery_target)`;
+the synchronous form refuses calls directly on the gateway event loop. Messaging
+platforms retain their existing native delivery APIs.
+
+Start a persistent delivery worker with
+`ctx.spawn_task(deliver_pending(), on_gateway_loop=True)`. The host owns that
+task across registration threads and temporary hook loops, and cancels it when
+the plugin unloads. Gateway startup supports this before adapters are ready;
+completion publication remains retryable until the gateway can accept it.
+Without a gateway, this option raises `RuntimeError`. In an isolated plugin
+process it uses that host's long-lived loop. Omitting the option retains the
+current caller-loop behavior.
+
 ## Common mistakes
 
 **Handler doesn't return JSON string:**

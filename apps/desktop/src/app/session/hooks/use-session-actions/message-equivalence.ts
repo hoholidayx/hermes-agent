@@ -29,6 +29,7 @@ const COMPARED_FIELDS = [
   'recovered',
   'asyncResult',
   'asyncResultKind',
+  'pluginCompletion',
   'id',
   'role',
   'pending',

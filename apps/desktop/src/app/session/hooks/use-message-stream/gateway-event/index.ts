@@ -24,6 +24,7 @@ import { handleInputRequestEvent } from './input-requests'
 import { handleLifecycleEvent } from './lifecycle'
 import { handleMessageStreamEvent } from './message-stream'
 import { handleOnboardingEvent } from './onboarding'
+import { handlePluginCompletionEvent } from './plugin-completion'
 import { handleControlEvent } from './session-control'
 import { handleSessionInfoEvent } from './session-info'
 import { handleStatusEvent } from './status'
@@ -90,6 +91,7 @@ const HANDLERS: GatewayEventHandler[] = [
   handleSessionInfoEvent,
   handleDeferredPickEvent,
   handleControlEvent,
+  handlePluginCompletionEvent,
   handleMessageStreamEvent,
   handleToolProgressEvent,
   handleToolEvent,

@@ -20,7 +20,7 @@ from functools import partial
 _NOTED_PRODUCERS = frozenset({'async_delegation', 'completion', 'watch_match', 'watch_disabled'})
 # A cron result for a local chat (``session_cron.deliver_to_local_chat``) is finished text: a note
 # with or without a viewer, since a turn over it would only spend a model call (#143547 CRON-11).
-_ALWAYS_NOTED = frozenset({'cron'})
+_ALWAYS_NOTED = frozenset({'cron', 'plugin-completion'})
 
 
 def _producer(identity):
@@ -67,11 +67,27 @@ async def note_if_unviewed(authority, ref, row):
     metadata.update({key: descriptor[key] for key in ('display_text', 'notification_category') if key in descriptor})
     target = _physical_target(authority, ref.session_id)
     # Keyed by its admission: a claim is never replayed, and this keeps a write retry exact.
-    await tracked_write(authority, partial(
+    note_id = await tracked_write(authority, partial(
         authority.db.append_completion_note, target, row['admission_id'], row['payload']['text'],
         descriptor.get('display_kind', 'internal_notification'), metadata))
     refresh = getattr(authority.runner, '_refresh_agent_cache_message_count', None)
     if refresh is not None:  # the owner's own row: a cached agent stays, as after a turn's writes
         await refresh(live.route, target)
-    authority.pending_results[row['admission_id']] = {'result': {'final_response': '', 'messages': []}, 'usage': {}}
+    result = {'final_response': '', 'messages': []}
+    if _producer(descriptor['identity']) == 'plugin-completion':
+        import asyncio
+        result['completion_note'] = await asyncio.to_thread(_completion_note, authority.db, target, note_id)
+    authority.pending_results[row['admission_id']] = {'result': result, 'usage': {}}
     return ''
+
+
+def _completion_note(db, session_id, note_id):
+    """The same display projection a history read returns, with its durable row id."""
+    messages = db.get_messages(session_id, after_id=note_id-1, limit=1)
+    if not messages or messages[0]['id'] != note_id:
+        from hermes_state_runtime import RuntimeStoreError
+        raise RuntimeStoreError('storage_unavailable')
+    message = messages[0]
+    return {'role': 'user', 'text': message['content'], 'row_id': note_id,
+            **{key: message[key] for key in ('timestamp', 'display_kind', 'display_metadata', 'message_uid')
+               if message.get(key) is not None}}
