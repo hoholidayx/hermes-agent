@@ -913,8 +913,10 @@ def _reasoning_shape(msg: dict) -> tuple:
 
 def reasoning_replay_key(agent: Any) -> tuple:
     """Route identity that needs original carriers restored; field rejections only narrow them."""
+    from agent.tool_history_policy import effective_tool_history_filter
+
     return tuple(getattr(agent, key, None) for key in ("api_mode", "provider", "model", "base_url")) + (
-        bool(getattr(agent, "_reasoning_echo_flag", False)),
+        bool(getattr(agent, "_reasoning_echo_flag", False)), effective_tool_history_filter(agent),
     )
 
 

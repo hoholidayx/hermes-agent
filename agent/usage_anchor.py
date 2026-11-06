@@ -99,7 +99,7 @@ def _reasoning_boundary_fingerprint(messages: list[dict[str, Any]]) -> str:
 
 
 def reasoning_usage_context(agent: Any, messages: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
-    """The route and user boundary whose reasoning projection the provider priced.
+    """The route and replay boundaries whose request projection the provider priced.
 
     Full-history replay is stable across user boundaries. Current-turn replay is not:
     the next user message retires the previous tool loop's thinking from the wire.
@@ -112,10 +112,16 @@ def reasoning_usage_context(agent: Any, messages: list[dict[str, Any]]) -> Optio
     route = reasoning_route_for_agent(agent)
     facts = [getattr(agent, key, "") or "" for key in ("api_mode", "provider", "model", "base_url")]
     raw = json.dumps([*facts, route.pad, sorted(route.carriers or ()), route.replay_history], default=str)
-    return {
+    context = {
         "route": hashlib.sha256(raw.encode()).hexdigest(),
         "boundary": None if route.replay_history else _reasoning_boundary_fingerprint(messages),
     }
+    from agent.tool_history_policy import tool_history_scope_key
+
+    tool_scope = tool_history_scope_key(agent, messages)
+    if tool_scope is not None:
+        context["tool_history_scope"] = tool_scope
+    return context
 
 
 def prepare_reasoning_usage_accounting(agent: Any, messages: list[dict[str, Any]]) -> None:
@@ -124,14 +130,22 @@ def prepare_reasoning_usage_accounting(agent: Any, messages: list[dict[str, Any]
     This is not a compression: its pending-verification and rearm state must survive.
     Only the old prompt-size floor and its rough pairing cease to represent this request.
     """
+    from agent.tool_history_policy import effective_tool_history_filter, is_primary_tool_history_session
+
+    filter_tools = effective_tool_history_filter(agent)
     compressor = getattr(agent, "context_compressor", None)
     if compressor is not None:
         compressor._reasoning_echo_flag = bool(getattr(agent, "_reasoning_echo_flag", False))
+        # The compressor has no client capability record; inherit the effective wire decision.
+        compressor._tool_history_echo_flag = not filter_tools
+        primary = getattr(agent, "_tool_history_primary", None)
+        compressor._tool_history_primary = primary if primary is not None else is_primary_tool_history_session(agent)
+        compressor._tool_history_boundary = getattr(agent, "_tool_history_boundary", None)
     context = reasoning_usage_context(agent, messages)
     anchor = getattr(agent, "_usage_anchor", None)
     previous = (anchor.get("reasoning_context") if isinstance(anchor, dict)
                 else getattr(agent, "_reasoning_usage_context", None))
-    filtered = context is not None and context["boundary"] is not None
+    filtered = context is not None and (context["boundary"] is not None or filter_tools)
     if previous != context and (previous is not None or filtered):
         set_usage_anchor(agent, None)
         if compressor is not None:
@@ -170,6 +184,11 @@ def anchored_context_tokens(messages: list[dict[str, Any]], anchor: Optional[dic
     if isinstance(context, dict) and context.get("boundary") is not None:
         if context["boundary"] != _reasoning_boundary_fingerprint(messages):
             return None
+    if isinstance(context, dict) and isinstance(context.get("tool_history_scope"), dict):
+        from agent.tool_history_policy import tool_history_boundary_key
+
+        if context["tool_history_scope"].get("boundary") != tool_history_boundary_key(messages):
+            return None
     from agent.model_metadata import estimate_messages_tokens_rough
 
     total = int(anchor["prompt_tokens"]) + int(anchor.get("completion_tokens") or 0)
@@ -206,6 +225,9 @@ def _serialize(anchor: Any) -> Optional[dict[str, Any]]:
     if (isinstance(context, dict) and isinstance(context.get("route"), str)
             and (context.get("boundary") is None or isinstance(context.get("boundary"), str))):
         serialized["reasoning_context"] = {"route": context["route"], "boundary": context.get("boundary")}
+        tool_scope = context.get("tool_history_scope")
+        if isinstance(tool_scope, dict) and isinstance(tool_scope.get("boundary"), str):
+            serialized["reasoning_context"]["tool_history_scope"] = {"boundary": tool_scope["boundary"]}
     return serialized
 
 

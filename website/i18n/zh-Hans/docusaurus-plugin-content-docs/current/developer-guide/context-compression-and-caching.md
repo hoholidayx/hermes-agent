@@ -258,6 +258,27 @@ max_summary_tokens   = min(200,000 × 0.05, 12,000) = 10,000
 ```
 
 
+## 可选的工具历史回传过滤
+
+`agent.tool_history_echo` 默认为 `true`。设为 YAML 布尔值 `false` 后，只对主会话的真实 Chat Completions transport
+过滤历史工具调用与结果。角色判断和请求投影集中在 `agent/tool_history_policy.py`；子 agent、侧任务、review fork、cron 和
+Kanban worker 不参与过滤。managed compute 进程也可能承载主会话，不能仅凭进程的 worker 身份排除它。
+
+正常用户消息的边界在轮次准入时以 message UID 固定；`/steer`、带类型标记的内部续跑和通知不推进边界。
+投影仅修改副本：删除旧工具消息和调用载荷、保留 assistant 正文，并合并因删除工具消息而相邻的历史 assistant 消息。
+原始会话和摘要模型的输入保持不变。无法确认边界时保留工具上下文。
+冻结配置与跟随 profile 的生效时机见[配置文档](../user-guide/configuration.md#工具历史回传tool_history_echo)。
+
+请求组装、重试、迭代上限总结、预检压力和尾部消息计价使用同一投影策略。gateway hygiene 通常也采用它，
+但客户端创建前有一项保守例外：已注册的 `ProviderProfile` 覆盖 `create_client` 时，hygiene 不调用工厂，直接计入完整工具历史。
+这避免把未知客户端当作 CC transport，但即使自定义客户端实际支持 CC，也可能更早触发压缩。
+客户端创建后，主请求、agent 内部预检和尾部计价仍按实际客户端能力标记和 transport 门槛判断；工厂覆盖本身不会关闭这些路径的过滤。
+usage anchor 记录工具历史范围，边界或路由变化时丢弃不再对应当前请求的旧计数。
+保留原始消息使 native 或不支持的 fallback 可以恢复其正常历史；同一运行中的 agent 对同一不支持的路由只警告一次。
+
+这是对历史请求前缀稳定规则的显式可选例外：新用户轮次开始时省略旧工具消息，可能降低 prompt cache 命中率。
+同一工具循环内仍须固定边界、配置、系统提示词和工具定义；不能改写持久化历史，也不能隐式扩展到原生协议。
+
 ## Prompt 缓存（Anthropic）
 
 来源：`agent/prompt_caching.py`

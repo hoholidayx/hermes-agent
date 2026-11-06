@@ -39,8 +39,33 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
+def _hygiene_tool_history_settings(runner, source, data: dict) -> tuple[Any, bool]:
+    """Hygiene precedes the turn's policy scope; resolve its replay setting explicitly."""
+    from types import SimpleNamespace
+    from agent.tool_history_policy import is_primary_tool_history_session
+    from gateway.session_authorities import active_authority
+    from gateway.session_policy import policy_for_source
+
+    policy = policy_for_source(runner, source)
+    config = policy.config(active_authority(runner), secrets=False) if policy else data
+    section = config.get("agent")
+    echo = section.get("tool_history_echo", True) if isinstance(section, dict) else True
+    # A Kanban policy runs on the CLI platform but carries its worker role in source.
+    platform = policy.source if policy else getattr(source, "platform", None)
+    return echo, is_primary_tool_history_session(SimpleNamespace(platform=platform))
+
+
+def _hygiene_has_profile_client(provider: Optional[str]) -> bool:
+    """Before client construction, a provider-owned factory may hide a native protocol."""
+    from providers import get_provider_profile
+    from providers.base import ProviderProfile
+
+    profile = get_provider_profile(provider or "")
+    return profile is not None and type(profile).create_client is not ProviderProfile.create_client
+
+
 def _hygiene_reasoning_projection(hs, history: list, incoming_message: Optional[dict]) -> Optional[list]:
-    """Price the upcoming CC request, not a previous turn's now-retired reasoning.
+    """Price upcoming replay, excluding retired reasoning and historical tool exchanges.
 
     Hygiene runs before the incoming row is appended. Include that row only while
     resolving replay scope, then exclude it from this history-only budget.
@@ -48,6 +73,7 @@ def _hygiene_reasoning_projection(hs, history: list, incoming_message: Optional[
     from types import SimpleNamespace
     from agent.agent_init import _resolve_api_mode
     from agent.message_sanitization import project_reasoning_for_request, reasoning_replay_route
+    from agent.tool_history_policy import effective_tool_history_filter, project_tool_history_for_request
 
     data = hs.data if isinstance(hs.data, dict) else {}
     model = data.get("model")
@@ -57,14 +83,21 @@ def _hygiene_reasoning_projection(hs, history: list, incoming_message: Optional[
     echo = model["reasoning_echo"] if "reasoning_echo" in model else agent_config.get("reasoning_echo", False)
     base_url = hs.base_url or ""
     route_facts = SimpleNamespace(provider=hs.provider or "", model=hs.model,
-                                 _base_url_hostname=base_url_hostname(base_url), _base_url_lower=base_url.lower())
+                                 base_url=base_url, _base_url_hostname=base_url_hostname(base_url),
+                                 _base_url_lower=base_url.lower(),
+                                 _tool_history_primary=getattr(hs, "tool_history_primary", True),
+                                 _tool_history_echo_flag=getattr(hs, "tool_history_echo", agent_config.get("tool_history_echo", True)),
+                                 _tool_history_boundary=None)
     _resolve_api_mode(route_facts, getattr(hs, "api_mode", None) or model.get("api_mode"), hs.provider, base_url)
     route = reasoning_replay_route(route_facts.api_mode, route_facts.provider, hs.model, base_url,
                                    echo_opt_in=echo is True)
-    if route.carriers is None or route.replay_history:
+    filter_reasoning = route.carriers is not None and not route.replay_history
+    if not filter_reasoning and not effective_tool_history_filter(route_facts):
         return None
     scoped = [*history, incoming_message] if incoming_message is not None else history
-    return project_reasoning_for_request(scoped, route)[:len(history)]
+    tools = project_tool_history_for_request(route_facts, scoped)
+    projected = project_reasoning_for_request(tools.messages, route) if filter_reasoning else tools.messages
+    return [message for index, message in zip(tools.source_indices, projected) if index < len(history)]
 
 
 class GatewayTurnHygieneMixin:
@@ -132,10 +165,12 @@ class GatewayTurnHygieneMixin:
             max_turn_hold_seconds=10.0, failure_cooldown_seconds=300.0, config_context_length=None,
             provider=None, base_url=None, api_key=None, data={},
         )
+        hs.tool_history_echo, hs.tool_history_primary = True, False
         try:
             hs.data = _load_gateway_config()
             if hs.data:
                 self._hmwa_hygiene_read_config(hs, hs.data)
+            hs.tool_history_echo, hs.tool_history_primary = _hygiene_tool_history_settings(self, source, hs.data)
             configured_model, configured_provider, configured_base_url = hs.model, hs.provider, hs.base_url
 
             with suppress(Exception):
@@ -147,6 +182,9 @@ class GatewayTurnHygieneMixin:
                 hs.base_url = _hyg_runtime.get("base_url") or hs.base_url
                 hs.api_key = _hyg_runtime.get("api_key") or hs.api_key
                 hs.api_mode = _hyg_runtime.get("api_mode")
+
+            if _hygiene_has_profile_client(hs.provider):
+                hs.tool_history_echo = True
 
             if hs.config_context_length is not None:
                 try:
@@ -194,14 +232,14 @@ class GatewayTurnHygieneMixin:
         _warn_token_threshold = int(_hyg_context_length * 0.95)
         _msg_count = len(history)
 
-        # Current-turn CC replay retires old thinking before the incoming user row is
+        # Current-turn CC replay retires old reasoning/tools before the incoming user row is
         # appended; yesterday's actual usage/anchor can no longer price that request.
         # Other routes retain the provider-exact count, then persisted anchor, then rough fallback.
         from agent.image_token_cost import image_cost_context, learned_image_token_cost
         _projected = _hygiene_reasoning_projection(hs, history, incoming_message)
         with image_cost_context(learned_image_token_cost(hs.model, hs.base_url)):
             if _projected is not None:
-                _approx_tokens, _token_source = estimate_messages_tokens_rough(_projected), "reasoning-projected"
+                _approx_tokens, _token_source = estimate_messages_tokens_rough(_projected), "replay-projected"
             else:
                 _anchored = None
                 if session_entry.last_prompt_tokens <= 0:

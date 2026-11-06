@@ -1994,6 +1994,64 @@ After updating Hermes code, restart already-running gateway processes to load th
 Once the updated code is running, configuration changes apply at the next user turn. Existing
 sessions need no reset or database migration.
 
+### Tool history replay (`tool_history_echo`)
+
+Main conversations retain historical tool calls and results by default. To omit them from later
+Chat Completions requests:
+
+```yaml
+agent:
+  tool_history_echo: false  # default: true
+```
+
+```bash
+hermes config set agent.tool_history_echo false  # filter historical tools
+hermes config get agent.tool_history_echo        # inspect this profile's setting
+hermes config set agent.tool_history_echo true   # roll back to the default
+```
+
+For a named profile, use `hermes -p <profile> config set agent.tool_history_echo false`.
+Only the YAML boolean `false` opts out; invalid values such as the string `"false"` log a warning
+and retain tool history.
+
+With `false`, the next normal user message starts a request history without completed earlier
+tool calls or tool-result messages. Assistant text is kept, including text that accompanied a
+tool call. The active user turn retains all its tool calls and results until the next normal user
+message; steering and internal continuation messages do not discard an in-flight tool loop.
+The model can therefore use each result to finish the current task, but later answers can rely
+only on the retained conversation text or fresh tool calls. If assistant text or summaries omit
+the supporting facts, later replies may question earlier conclusions or repeat tool calls. This
+is the expected tradeoff of removing raw tool evidence from subsequent requests.
+
+This setting applies to main conversations across CLI, TUI, Desktop and messaging surfaces,
+including main conversations hosted in managed compute processes. Delegated subagents, side agents,
+background review forks, cron jobs and Kanban workers keep their existing tool histories. Only the
+actual Chat Completions transport is filtered; native Anthropic, Bedrock, Responses and Gemini
+requests, MoA and agent-as-provider clients keep their existing replay rules. The setting does
+not remove tool schemas or disable tool use. Each live agent warns once per unsupported route;
+rebuilding the agent can emit the warning again. A fallback using Chat Completions stays filtered;
+a fallback to an unsupported transport receives its normal history.
+
+The original stored transcript, history display and exports remain complete. Changing the setting
+back to `true` restores replay of tool messages that remain in the transcript. Filtering changes
+the request prefix between user turns and can reduce prompt-cache reuse across those turns.
+Compression still summarizes the canonical transcript, including tools, so summaries and assistant
+text can retain information learned from tool results.
+
+For registered providers that construct their own clients, gateway hygiene conservatively counts
+full tool history before the client's transport capabilities are known. This can trigger earlier
+compression. After client creation, main requests, in-agent preflight and tail budgets apply the
+actual transport gate normally; a custom client factory alone does not disable tool filtering.
+
+The setting is read at each normal user-turn boundary and fixed for that turn. Standalone and
+following sessions use their profile's current setting. Local sessions with a frozen configuration
+keep their creation snapshot, including when resumed; create a new session to pick up a changed
+profile value. Managed compute processes follow the same session policy. `hermes config get`
+reports the profile value; it does not prove that a frozen session or the current transport applies it.
+
+The setting is independent of `model.reasoning_echo`, has no model-level or fallback override, and
+requires no database migration. Restart already-running services after updating Hermes code.
+
 ### Answer length (`text_verbosity`)
 
 Responses-API models (OpenAI GPT-5 family and later, direct OpenAI, ChatGPT Codex and Azure routes) also accept a separate knob for how long the final natural-language answer is, independent of reasoning depth:

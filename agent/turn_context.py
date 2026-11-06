@@ -76,7 +76,9 @@ def _preflight_request_tokens(
     estimate_messages = messages
     if getattr(agent, "api_mode", "") == "chat_completions":
         from agent.message_sanitization import project_reasoning_for_request, reasoning_route_for_agent
+        from agent.tool_history_policy import project_tool_history_for_request
         estimate_messages = project_reasoning_for_request(messages, reasoning_route_for_agent(agent))
+        estimate_messages = project_tool_history_for_request(agent, estimate_messages).messages
         charge_stale_thinking = True  # The projection has already applied the complete user-turn scope.
     if charge_stale_thinking and getattr(agent, "api_mode", "") == "anthropic_messages":
         from agent.anthropic_thinking_policy import native_anthropic_preserves_prior_thinking
@@ -1190,6 +1192,8 @@ def build_turn_context(
     append_message(messages, user_msg)
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx
+    from agent.tool_history_policy import bind_tool_history_for_turn
+    bind_tool_history_for_turn(agent, messages)
 
     agent._user_turn_count += 1
     # Turn-initiator state for per-request provider headers: the first API call of this
@@ -1343,6 +1347,10 @@ def build_api_messages(
     from agent.agent_runtime_helpers import fill_empty_non_final_wire_payload
     from agent.conversation_loop import _clone_message_for_send
     from agent.replay_cleanup import canonicalize_replay_history
+    from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID
+    from agent.tool_history_policy import effective_tool_history_filter
+
+    preserve_tool_boundary = preserve_reasoning_sources or effective_tool_history_filter(agent)
 
     has_current = isinstance(current_turn_user_idx, int) and 0 <= current_turn_user_idx < len(messages)
     current_turn_message = messages[current_turn_user_idx] if has_current else None
@@ -1372,7 +1380,9 @@ def build_api_messages(
         # the same set, so it never prices bytes the provider never receives.
         _api_content = api_msg.pop("api_content", None)
         for key in PERSISTENCE_ONLY_MESSAGE_FIELDS:
-            if not (preserve_reasoning_sources and key in {"display_kind", "display_metadata"}):
+            if not (preserve_tool_boundary and key in {
+                "display_kind", "display_metadata", MESSAGE_UID, ABSORBED_MESSAGE_UIDS,
+            }):
                 api_msg.pop(key, None)
 
         # Inject ephemeral context (memory prefetch + pre_llm_call user hooks)
@@ -1443,5 +1453,12 @@ def build_api_messages(
         api_messages = [{"role": "system", "content": effective_system}] + api_messages
     if not preserve_reasoning_sources and getattr(agent, "api_mode", "chat_completions") == "chat_completions":
         from agent.message_sanitization import project_reasoning_for_request, reasoning_route_for_agent
+        from agent.tool_history_policy import merge_tool_history_assistants, project_tool_history_for_request
         api_messages = project_reasoning_for_request(api_messages, reasoning_route_for_agent(agent))
+        api_messages = project_tool_history_for_request(agent, api_messages).messages
+        api_messages = merge_tool_history_assistants(agent, api_messages)
+    if not preserve_reasoning_sources:
+        for message in api_messages:
+            for key in PERSISTENCE_ONLY_MESSAGE_FIELDS:
+                message.pop(key, None)
     return api_messages, effective_system

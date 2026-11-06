@@ -84,6 +84,22 @@ DeepSeek 工具迭代所需的 reasoning 不会强制开启跨消息回传。此
 原生 Anthropic、Bedrock、Responses 协议沿用已有规则。
 配置优先级、fallback 继承和生效时机详见[配置文档](website/docs/user-guide/configuration.md#reasoning-replay-reasoning_echo)。
 
+### 工具历史回传策略
+
+主会话可以在后续 Chat Completions 请求中省略已完成轮次的工具调用和工具结果，保留 assistant 正文及完整原始会话：
+
+```yaml
+agent:
+  tool_history_echo: false  # 默认 true，保留工具历史
+```
+
+使用 `hermes config set agent.tool_history_echo false` 开启过滤；使用
+`hermes config set agent.tool_history_echo true` 恢复默认行为。
+
+过滤从下一条正常用户消息开始；当前工具迭代仍保留结果。子 agent、侧任务、cron 和 Kanban worker 沿用原有历史。
+采用冻结配置的现有会话需要新建会话才能读取修改后的 profile 设置。
+支持的请求协议与配置生效时机详见[配置文档](website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/configuration.md#工具历史回传tool_history_echo)。
+
 ---
 
 ## 省去到处收集 API Key — Nous Portal

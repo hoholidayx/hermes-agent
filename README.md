@@ -136,6 +136,25 @@ not reasoning generation or history display. Native Anthropic, Bedrock, and Resp
 retain their existing replay rules. See the [configuration guide](website/docs/user-guide/configuration.md#reasoning-replay-reasoning_echo)
 for fallback inheritance, configuration precedence, and when changes take effect.
 
+### Tool history replay
+
+Main conversations can also omit completed tool calls and results from later Chat Completions
+requests while keeping assistant text and the full stored transcript:
+
+```yaml
+agent:
+  tool_history_echo: false  # default: true, retain tool history
+```
+
+Set it with `hermes config set agent.tool_history_echo false`; restore the default with
+`hermes config set agent.tool_history_echo true`.
+
+Filtering starts at the next normal user message; the active tool loop keeps its results.
+Subagents, side agents, cron jobs, and Kanban workers keep their existing histories. See the
+[configuration guide](website/docs/user-guide/configuration.md#tool-history-replay-tool_history_echo)
+for transport support and configuration timing, including frozen sessions that need a new session
+to pick up a changed profile setting.
+
 ---
 
 ## Skip the API-key collection — Nous Portal

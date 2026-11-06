@@ -205,13 +205,17 @@ def with_pruned_row_skill_safety_rule(original: list[dict[str, Any]], pruned: li
 
 
 def tail_row_pricer(compressor: Any, messages: list[dict[str, Any]]):
-    """Price the same user-turn reasoning projection used by request assembly and preflight."""
+    """Price request projections by canonical index, including rows omitted from replay."""
     from agent.context_compressor import _estimate_msg_budget_tokens, _last_assistant_index
     from agent.message_sanitization import project_reasoning_for_request, reasoning_route_for_agent
 
     if getattr(compressor, "api_mode", "") == "chat_completions":
-        projected = project_reasoning_for_request(messages, reasoning_route_for_agent(compressor))
-        return lambda i: _estimate_msg_budget_tokens(projected[i])
+        from agent.tool_history_policy import project_tool_history_for_request
+
+        tools = project_tool_history_for_request(compressor, messages)
+        projected = project_reasoning_for_request(tools.messages, reasoning_route_for_agent(compressor))
+        prices = dict(zip(tools.source_indices, map(_estimate_msg_budget_tokens, projected)))
+        return lambda i: prices.get(i, 0)
     native_budget = compressor._native_anthropic_budget()
     if native_budget:
         return lambda i: native_budget(messages[i])

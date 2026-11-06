@@ -1391,9 +1391,11 @@ def _apply_context_engine_selection(
         # selection too or those fields reach the provider. Dicts without them pass through as-is.
         stripped = [without_persistence_fields(m) for m in selected]
         if preserve_reasoning_boundary:
-            # Keep classification metadata only until the reasoning projection. The cleanup
+            # Keep classification and boundary metadata only until replay projection. The cleanup
             # immediately following it removes these before any transport or request hook.
-            stripped = [{**target, **{key: source[key] for key in ("display_kind", "display_metadata") if key in source}}
+            stripped = [{**target, **{key: source[key] for key in (
+                "display_kind", "display_metadata", "message_uid", "_absorbed_message_uids",
+            ) if key in source}}
                         for source, target in zip(selected, stripped)]
         return selected if all(a is b for a, b in zip(stripped, selected)) else stripped
     logger.warning(

@@ -781,6 +781,37 @@ Codex app-server sessions, native Responses compaction and micro-compaction are 
 ```
 
 
+## Opt-in tool-history replay
+
+`agent.tool_history_echo` defaults to `true`. Setting it to the YAML boolean `false` opts primary
+conversations into filtering historical tool calls/results on the actual Chat Completions transport.
+`agent/tool_history_policy.py` owns role/transport gating and the request projection; delegates,
+side agents, review forks, cron and Kanban workers are excluded. A managed compute process can
+still host a primary conversation: process-worker identity alone does not exclude it.
+
+The normal human-user boundary is pinned by message UID at turn admission. Steering, typed
+internal continuations and internal notifications do not advance it. Projection copies remove old
+tool rows and tool-call payloads, preserve assistant text, and join newly adjacent historical
+assistant messages. Canonical transcripts and the summarizer's input are unchanged. Missing or
+unprovable boundaries retain tool context. See [configuration](../user-guide/configuration.md#tool-history-replay-tool_history_echo)
+for frozen versus following session configuration timing.
+
+Request assembly, retries, iteration-limit summaries, preflight pressure and tail-row pricing use
+the same projection policy. Gateway hygiene normally uses it too, with a preconstruction exception:
+when a registered `ProviderProfile` overrides `create_client`, hygiene counts full tool history
+without invoking that factory. This avoids assuming an unknown client is CC-compatible and can
+trigger earlier compression even for a custom CC client. After construction, main requests,
+in-agent preflight and tail pricing use the actual client capability marker and transport gate;
+the factory override alone does not disable filtering there. Usage anchors include the tool-history scope;
+a boundary or route change retires counts that priced a different request. Retained source
+messages allow native/unsupported fallbacks to use their normal history, with a warning deduplicated
+per live agent and unsupported route.
+
+This is an explicit opt-in exception to stable historical request prefixes: deleting prior tools
+at a new user boundary can reduce prompt-cache reuse. Within the active tool loop, keep the
+boundary, policy, system prompt and tool definitions stable. Do not rewrite durable history or
+extend this behavior to native protocols implicitly.
+
 ## Prompt Caching (Anthropic)
 
 Source: `agent/prompt_caching.py`

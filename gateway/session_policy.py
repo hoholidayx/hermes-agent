@@ -72,7 +72,8 @@ def unpin_reasoning(config, profile):
     config[SESSION_PINS] = {**(config.get(SESSION_PINS) or {}), 'reasoning': False}
 
 
-FOLLOW_AGENT_KEYS = ('reasoning_effort', 'reasoning_overrides', 'service_tier', 'disabled_toolsets', 'coding_context')
+FOLLOW_AGENT_KEYS = ('reasoning_effort', 'reasoning_overrides', 'service_tier', 'disabled_toolsets', 'coding_context',
+                     'tool_history_echo')
 # What a pick (create-time ``model`` / committed ``/model``) owns of the ``model:`` block.
 SELECTION_KEYS = ('default', 'provider', 'base_url', 'api_mode', 'selection_profile', 'api_key_from', 'key_env',
                   'api_key_env')

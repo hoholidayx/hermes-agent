@@ -110,9 +110,15 @@ def prepare_reasoning_replay_messages(agent: Any, source_messages: list, *, reco
     from agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE, _canonicalize_api_tool_calls, _clone_message_for_send
     from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS
     from agent.message_sanitization import project_reasoning_for_request, reasoning_route_for_agent
+    from agent.tool_history_policy import (
+        merge_tool_history_assistants, project_tool_history_for_request, warn_unsupported_tool_history,
+    )
 
+    warn_unsupported_tool_history(agent)
     if getattr(agent, "api_mode", "") == "chat_completions":
         api_messages = project_reasoning_for_request(source_messages, reasoning_route_for_agent(agent))
+        api_messages = project_tool_history_for_request(agent, api_messages).messages
+        api_messages = merge_tool_history_assistants(agent, api_messages)
     else:
         api_messages = [_clone_message_for_send(m) for m in source_messages]
         if reconcile_native:
@@ -176,12 +182,15 @@ def assemble_api_request(
         estimate_messages_tokens_rough,
         estimate_native_anthropic_messages_tokens_rough,
     )
+    from agent.tool_history_policy import tool_history_filter_requested
+
+    preserve_sources = getattr(agent, "api_mode", "") == "chat_completions" or tool_history_filter_requested(agent)
 
     api_messages, effective_system = build_api_messages(
         agent, messages, current_turn_user_idx=current_turn_user_idx,
         ext_prefetch_cache=_ext_prefetch_cache, plugin_user_context=_plugin_user_context,
         moa_config=moa_config, active_system_prompt=active_system_prompt,
-        preserve_reasoning_sources=getattr(agent, "api_mode", "") == "chat_completions",
+        preserve_reasoning_sources=preserve_sources,
     )
 
     if moa_config:
@@ -200,7 +209,7 @@ def assemble_api_request(
     _sel_incoming = (
         messages[current_turn_user_idx] if 0 <= current_turn_user_idx < len(messages) else None
     )
-    selection_options = {"preserve_reasoning_boundary": True} if getattr(agent, "api_mode", "") == "chat_completions" else {}
+    selection_options = {"preserve_reasoning_boundary": True} if preserve_sources else {}
     api_messages = _apply_context_engine_selection(
         agent, api_messages, messages, _sel_incoming, logger=request_logger, **selection_options,
     )
@@ -211,7 +220,7 @@ def assemble_api_request(
 
     apply_rejected_thinking_suppression(agent, api_messages)
 
-    reasoning_source_messages = api_messages if getattr(agent, "api_mode", "") == "chat_completions" else None
+    reasoning_source_messages = api_messages if preserve_sources else None
     api_messages = prepare_reasoning_replay_messages(agent, api_messages)
 
     # One-time repeated-heal notice goes out via the status/warning callback, NEVER

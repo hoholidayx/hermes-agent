@@ -1121,6 +1121,50 @@ agent:
 /reasoning hide      # 隐藏模型思考
 ```
 
+### 工具历史回传（`tool_history_echo`）
+
+主会话默认保留历史工具调用和工具结果。设为 `false` 后，后续真实 Chat Completions 请求会省略已完成用户轮次中的工具记录：
+
+```yaml
+agent:
+  tool_history_echo: false  # 默认 true
+```
+
+```bash
+hermes config set agent.tool_history_echo false  # 开启历史工具过滤
+hermes config get agent.tool_history_echo        # 查看当前 profile 的配置值
+hermes config set agent.tool_history_echo true   # 恢复默认行为
+```
+
+命名 profile 使用 `hermes -p <profile> config set agent.tool_history_echo false`。
+只有 YAML 布尔值 `false` 会开启过滤；字符串 `"false"` 等无效值会记录警告并继续保留工具历史。
+
+过滤从下一条正常用户消息开始。当前用户轮次中的全部工具调用和结果仍保留，直到下一条正常用户消息到来；
+`/steer`、内部续跑和后台通知不会提前清除正在处理的工具上下文。历史 assistant 正文始终保留，包括调用工具时附带的说明。
+后续回答可以依赖保留的会话文字，或重新调用工具取得结果。如果 assistant 正文或摘要没有保留支持结论的事实，
+后续回复可能质疑之前的结论或重新调用工具；这是后续请求缺少原始工具证据的预期代价。
+
+此配置适用于 CLI、TUI、Desktop 和消息平台的主会话，包括由 managed compute 进程承载的主会话。
+子 agent、侧任务、后台 review fork、cron 和 Kanban worker 沿用原有工具历史。
+仅过滤真实 Chat Completions transport；原生 Anthropic、Bedrock、Responses、Gemini，以及 MoA 和 agent-as-provider 客户端保持原有规则。
+工具定义和调用能力不受影响。每个运行中的 agent 对同一不支持的路由只提示一次；重建 agent 后可能再次提示。
+fallback 仍走 Chat Completions 时继续过滤，切换到不支持的 transport 时使用该协议的正常历史。
+
+原始会话存储、历史展示和导出不被此配置修改。恢复 `true` 后，仍存在于会话中的工具记录可以重新回传。
+过滤会改变用户轮次之间的请求前缀，可能降低跨轮 prompt cache 命中率。
+压缩仍使用包含工具记录的完整原始上下文，因此摘要和 assistant 正文可能保留从工具结果中取得的信息。
+
+对于自行构造客户端的已注册提供商，gateway hygiene 在尚未确认客户端 transport 能力时，会保守计入完整工具历史，
+因此可能更早触发压缩。客户端创建后，主请求、agent 内部预检和尾部预算仍按实际 transport 能力判断并应用过滤；
+仅自定义客户端工厂不会关闭主会话的工具过滤。
+
+配置在正常用户轮次开始时读取，并在该轮内固定。独立运行和跟随 profile 的会话会读取当前 profile 设置；
+使用冻结配置的本地会话保留创建时的快照，恢复会话也不会更新此项，需要新建会话才能使用修改后的值。
+managed compute 进程遵守对应会话的同一策略。`hermes config get` 展示 profile 配置值，不能证明冻结会话或当前 transport 已实际应用过滤。
+
+此开关独立于 `model.reasoning_echo`，没有模型级或 fallback 级覆盖，不需要数据库迁移。
+更新 Hermes 代码后，已运行的服务需要重启以加载新代码。
+
 ## 工具使用强制
 
 某些模型偶尔会将预期操作描述为文本而不是进行工具调用（"我会运行测试..."而不是实际调用终端）。工具使用强制会注入系统提示词指导，引导模型实际调用工具。
